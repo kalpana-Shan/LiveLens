@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+
+# Google Cloud credentials — NEVER push these
+*service-account*.json
+*credentials*.json
+*key*.json
+
+# Node
+node_modules/
+build/
+.env.local
+
+# Terraform state
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,42 @@
+# LiveLens — Cursor Rules
+
+## Project Context
+LiveLens is a real-time AI speaking coach built with:
+- Backend: Python, Google ADK, Gemini Live API
+  (model: gemini-2.5-flash-native-audio-preview on Vertex AI)
+  FastAPI WebSocket server deployed on Cloud Run
+  Firestore for session memory and grounding cache
+- Frontend: React PWA, TensorFlow.js, MediaPipe, Silero VAD, WebSocket client
+- Infrastructure: Terraform on GCP
+
+## Architecture Rules
+- NEVER expose Gemini API keys or GCP credentials to frontend
+- ALL Gemini API calls go through Cloud Run backend only
+- MediaPipe and Silero VAD always run browser-side — never server-side
+- Backend only receives compact JSON signals from browser (not raw video)
+- Firestore structure: /users/{uid}/sessions/{session_id}
+- Coaching snippet format ALWAYS:
+  [Observation] + [Why it matters] + [Action verb]
+- Context window: 90-second sliding window
+  SlidingWindow(target_tokens=32000)
+- Always enable session_resumption in LiveConnectConfig
+
+## Agent Design
+- LiveCoachAgent: real-time, fast, handles audio stream + posture/gaze JSON signals
+- ArgumentAgent: post-turn only, deep reasoning, argument quality scoring
+- OrchestratorAgent: routes between agents, manages session state
+
+## Code Style
+- Python: type hints always, async/await for all I/O operations
+- React: functional components only, hooks only, no class components
+- Always handle WebSocket disconnection and reconnection gracefully
+- Every Cloud Run endpoint: try/except with meaningful HTTP status codes
+- Variable and function names must clearly reflect LiveLens domain
+
+## File Structure
+backend/agents/ → all ADK agent files
+backend/tools/  → all ADK function tools
+backend/main.py → FastAPI WebSocket server entry point
+frontend/src/components/ → all React screen components
+frontend/src/hooks/ → all custom React hooks
+terraform/ → all GCP infrastructure code
