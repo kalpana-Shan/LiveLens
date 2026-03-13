@@ -1,12 +1,11 @@
 import os
 import json
 import asyncio
-import google.generativeai as genai
-from google.generativeai import types 
+from google import genai as genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
-
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 SYSTEM_PROMPT = """You are LiveLens, a real-time AI speaking coach.
