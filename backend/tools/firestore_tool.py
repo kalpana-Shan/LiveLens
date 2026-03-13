@@ -5,7 +5,7 @@ from datetime import datetime
 
 # Initialize Firebase only once
 if not firebase_admin._apps:
-    cred = credentials.Certificate(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+    cred = credentials.Certificate(os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON"))
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
