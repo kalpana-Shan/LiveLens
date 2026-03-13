@@ -1,13 +1,13 @@
 import os
 import json
 import asyncio
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from google.generativeai import types 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 SYSTEM_PROMPT = """You are LiveLens, a real-time AI speaking coach.
 You listen to the user's speech and observe their posture and gaze signals.
