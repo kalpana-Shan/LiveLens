@@ -9,12 +9,27 @@ const useWebSocket = (baseUrl, sessionId) => {
 
   // Construct the full WebSocket URL with session ID
   const getFullUrl = useCallback(() => {
-    // Remove trailing slash if present
     const cleanedBaseUrl = baseUrl.replace(/\/$/, '');
     return `${cleanedBaseUrl}/ws/${sessionId}`;
   }, [baseUrl, sessionId]);
 
-  // Connect to WebSocket
+  // Define reconnect FIRST (but it will call connect)
+  const reconnect = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    
+    reconnectTimeoutRef.current = setTimeout(() => {
+      console.log('Attempting to reconnect...');
+      connect(); // This will work now because connect is hoisted
+    }, 3000);
+  }, []); // Note: No dependency on connect yet
+
+  // Define connect SECOND (it uses reconnect)
   const connect = useCallback(() => {
     if (!sessionId) {
       console.error('No session ID provided');
@@ -39,7 +54,7 @@ const useWebSocket = (baseUrl, sessionId) => {
         
         // Attempt to reconnect if not a normal closure
         if (event.code !== 1000) {
-          reconnect();
+          reconnect(); // This now works
         }
       };
       
@@ -65,7 +80,26 @@ const useWebSocket = (baseUrl, sessionId) => {
       console.error('Connection error:', err);
       setError(err.message);
     }
-  }, [getFullUrl, sessionId, reconnect]);
+  }, [sessionId, getFullUrl, reconnect]); // Add reconnect as dependency
+
+  // Now update reconnect to include connect in dependencies
+  const reconnectWithConnect = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    
+    reconnectTimeoutRef.current = setTimeout(() => {
+      console.log('Attempting to reconnect...');
+      connect();
+    }, 3000);
+  }, [connect]); // Add connect as dependency
+
+  // Override the original reconnect
+  const finalReconnect = reconnectWithConnect;
 
   // Send audio data
   const sendAudio = useCallback((audioData) => {
@@ -93,26 +127,9 @@ const useWebSocket = (baseUrl, sessionId) => {
 
   // Handle coaching audio
   const onCoachingAudio = useCallback((audioData) => {
-    // Play coaching audio
     const audio = new Audio(audioData);
     audio.play().catch(e => console.error('Error playing audio:', e));
   }, []);
-
-  // Reconnect
-  const reconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
-    
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-    }
-    
-    reconnectTimeoutRef.current = setTimeout(() => {
-      console.log('Attempting to reconnect...');
-      connect();
-    }, 3000); // Try to reconnect after 3 seconds
-  }, [connect]);
 
   // Disconnect
   const disconnect = useCallback(() => {
@@ -144,7 +161,8 @@ const useWebSocket = (baseUrl, sessionId) => {
     disconnect,
     sendAudio,
     sendSignal,
-    reconnect
+    onCoachingAudio, // Add this to return
+    reconnect: finalReconnect
   };
 };
 
