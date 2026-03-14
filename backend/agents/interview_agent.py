@@ -3,7 +3,7 @@ import json
 import random
 from typing import Dict, Any, List
 from datetime import datetime
-import google.generativeai as genai
+import google.genai as genai  
 
 class InterviewAgent:
     def __init__(self, session_id: str):
