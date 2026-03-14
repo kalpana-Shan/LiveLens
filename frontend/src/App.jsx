@@ -1,7 +1,11 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import './App.css';
 import useWebSocket from './hooks/useWebSocket';
+
+// ─────────────────────────────────────────────
+// IMPORTANT: Get backend URL from environment
+// ─────────────────────────────────────────────
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "wss://livelens-production.up.railway.app";
 
 // ─────────────────────────────────────────────
 // ONBOARDING SCREEN
@@ -131,7 +135,8 @@ const CalibrationScreen = ({ onNext }) => {
 // SESSION SCREEN
 // ─────────────────────────────────────────────
 const SessionScreen = ({ sessionId, onEnd }) => {
-  const { sendSignal, onCoachingAudio } = useWebSocket(sessionId);
+  // ✅ FIXED: Pass both BACKEND_URL and sessionId to the hook
+  const { sendSignal, onCoachingAudio, isConnected } = useWebSocket(BACKEND_URL, sessionId);
   const [elapsed, setElapsed] = useState(0);
   const [coachMsg, setCoachMsg] = useState('Initialising your session...');
   const [postureScore, setPostureScore] = useState(92);
@@ -149,17 +154,28 @@ const SessionScreen = ({ sessionId, onEnd }) => {
       setIsCoaching(true);
       setTimeout(() => setIsCoaching(false), 3000);
     });
+    
+    // Show connection status
+    if (isConnected) {
+      setCoachMsg('✅ WebSocket connected! Ready for coaching.');
+      setEvents(ev => [{ time: '0:00', msg: 'Connected to AI coach' }, ...ev]);
+    } else {
+      setCoachMsg('⏳ Connecting to AI coach...');
+    }
+    
     setTimeout(() => {
       setCoachMsg('🎙️ Great start! Maintain eye contact.');
       setEvents(ev => [{ time: '0:05', msg: 'Good posture detected' }, ...ev]);
     }, 1500);
+    
     const iv = setInterval(() => {
       sendSignal({ type:'posture', score:0.9, ts:Date.now() });
       setPostureScore(s => Math.min(100, s + (Math.random() > 0.5 ? 1 : -1)));
       setGazeScore(s => Math.min(100, s + (Math.random() > 0.5 ? 2 : -2)));
     }, 4000);
+    
     return () => clearInterval(iv);
-  }, [onCoachingAudio, sendSignal]);
+  }, [onCoachingAudio, sendSignal, isConnected]);
 
   const fmt = (s) => `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
 
@@ -168,11 +184,13 @@ const SessionScreen = ({ sessionId, onEnd }) => {
       <div className="bg-animated" />
       <div style={{ position:'relative', zIndex:1, width:'100%', maxWidth:600, padding:'1.5rem' }}>
 
-        {/* Header bar */}
+        {/* Header bar with connection status */}
         <div className="glass fade-up" style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'0.9rem 1.5rem', marginBottom:'1rem' }}>
           <div style={{ display:'flex', alignItems:'center', gap:'0.6rem' }}>
-            <div className="status-dot" />
-            <span style={{ color:'#4ade80', fontWeight:600, fontSize:'0.9rem' }}>LIVE</span>
+            <div className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`} />
+            <span style={{ color: isConnected ? '#4ade80' : '#f87171', fontWeight:600, fontSize:'0.9rem' }}>
+              {isConnected ? 'LIVE' : 'CONNECTING...'}
+            </span>
           </div>
           <span className="gradient-text" style={{ fontWeight:700, fontSize:'1.05rem' }}>LiveLens</span>
           <span style={{ color:'#94a3b8', fontFamily:'monospace', fontSize:'0.95rem' }}>{fmt(elapsed)}</span>
