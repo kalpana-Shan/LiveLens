@@ -1,16 +1,31 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 
-const useWebSocket = (url) => {
+const useWebSocket = (baseUrl, sessionId) => {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState(null);
   const [error, setError] = useState(null);
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
 
+  // Construct the full WebSocket URL with session ID
+  const getFullUrl = useCallback(() => {
+    // Remove trailing slash if present
+    const cleanedBaseUrl = baseUrl.replace(/\/$/, '');
+    return `${cleanedBaseUrl}/ws/${sessionId}`;
+  }, [baseUrl, sessionId]);
+
   // Connect to WebSocket
   const connect = useCallback(() => {
+    if (!sessionId) {
+      console.error('No session ID provided');
+      setError('No session ID provided');
+      return;
+    }
+
     try {
-      wsRef.current = new WebSocket(url);
+      const fullUrl = getFullUrl();
+      console.log('Connecting to WebSocket:', fullUrl);
+      wsRef.current = new WebSocket(fullUrl);
       
       wsRef.current.onopen = () => {
         console.log('WebSocket connected');
@@ -18,9 +33,14 @@ const useWebSocket = (url) => {
         setError(null);
       };
       
-      wsRef.current.onclose = () => {
-        console.log('WebSocket disconnected');
+      wsRef.current.onclose = (event) => {
+        console.log('WebSocket disconnected:', event.code, event.reason);
         setIsConnected(false);
+        
+        // Attempt to reconnect if not a normal closure
+        if (event.code !== 1000) {
+          reconnect();
+        }
       };
       
       wsRef.current.onerror = (event) => {
@@ -45,7 +65,7 @@ const useWebSocket = (url) => {
       console.error('Connection error:', err);
       setError(err.message);
     }
-  }, [url]);
+  }, [getFullUrl, sessionId, reconnect]);
 
   // Send audio data
   const sendAudio = useCallback((audioData) => {
@@ -101,16 +121,20 @@ const useWebSocket = (url) => {
     }
     
     if (wsRef.current) {
-      wsRef.current.close();
+      wsRef.current.close(1000, 'Normal closure');
     }
   }, []);
 
-  // Cleanup on unmount
+  // Auto-connect when sessionId and baseUrl are available
   useEffect(() => {
+    if (baseUrl && sessionId) {
+      connect();
+    }
+    
     return () => {
       disconnect();
     };
-  }, [disconnect]);
+  }, [baseUrl, sessionId, connect, disconnect]);
 
   return {
     isConnected,
