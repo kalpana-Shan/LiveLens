@@ -1,0 +1,54 @@
+{
+    "companies": {
+      "google": {
+        "name": "Google",
+        "interview_style": "Behavioral + Technical",
+        "difficulty": "Hard",
+        "typical_questions": [
+          "Tell me about a time you led a project",
+          "How would you improve Google Search?",
+          "Explain a complex topic to a 5-year-old"
+        ],
+        "cultural_values": ["Innovation", "Collaboration", "User focus"]
+      },
+      "microsoft": {
+        "name": "Microsoft",
+        "interview_style": "Technical + Problem Solving",
+        "difficulty": "Hard",
+        "typical_questions": [
+          "How would you design a cloud solution?",
+          "Tell me about a time you failed",
+          "Explain your favorite Microsoft product"
+        ],
+        "cultural_values": ["Growth mindset", "Diversity", "Customer obsession"]
+      },
+      "startup": {
+        "name": "Fast-Growing Startup",
+        "interview_style": "Versatile + Cultural fit",
+        "difficulty": "Medium",
+        "typical_questions": [
+          "Why do you want to join a startup?",
+          "How do you handle ambiguity?",
+          "What's your superpower?"
+        ],
+        "cultural_values": ["Agility", "Ownership", "Passion"]
+      }
+    },
+    "roles": {
+      "software_engineer": {
+        "title": "Software Engineer",
+        "interview_rounds": ["Coding", "System Design", "Behavioral", "Hiring Committee"],
+        "key_skills": ["Algorithms", "Data Structures", "System Design", "Communication"]
+      },
+      "product_manager": {
+        "title": "Product Manager",
+        "interview_rounds": ["Product Sense", "Strategy", "Execution", "Leadership"],
+        "key_skills": ["Market Research", "Roadmapping", "Stakeholder Management", "Analytics"]
+      },
+      "sales_manager": {
+        "title": "Sales Manager",
+        "interview_rounds": ["Role-play", "Territory Planning", "Negotiation", "Leadership"],
+        "key_skills": ["Pipeline Management", "Closing", "Relationship Building", "Forecasting"]
+      }
+    }
+  }
