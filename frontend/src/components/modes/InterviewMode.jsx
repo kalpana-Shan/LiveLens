@@ -14,6 +14,7 @@ const InterviewMode = () => {
     clarity: 88,
     confidence: 75
   });
+  const [videoPlaying, setVideoPlaying] = useState(false);
 
   const videoStreamRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -31,40 +32,102 @@ const InterviewMode = () => {
     personality: 'professional'
   });
 
-  // Initialize Camera - FIXED
+  // Initialize Camera - FIXED with proper promise handling
   useEffect(() => {
     const initCamera = async () => {
       try {
         console.log('📷 Requesting camera access...');
+        
+        // Check browser support
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('Your browser does not support camera access. Please use Chrome or Edge.');
+        }
+
+        // Request camera with specific constraints
         const stream = await navigator.mediaDevices.getUserMedia({ 
           video: {
             width: { ideal: 1280 },
             height: { ideal: 720 },
-            facingMode: "user"
+            facingMode: "user",
+            frameRate: { ideal: 30 }
           }, 
-          audio: true
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        }).catch(err => {
+          console.error('Camera error type:', err.name);
+          if (err.name === 'NotAllowedError') {
+            throw new Error('Camera access denied. Please click the camera icon in the address bar and allow access, then refresh.');
+          } else if (err.name === 'NotFoundError') {
+            throw new Error('No camera found on your device.');
+          } else if (err.name === 'NotReadableError') {
+            throw new Error('Camera is already in use by another app. Please close other apps using your camera.');
+          } else if (err.name === 'OverconstrainedError') {
+            throw new Error('Camera cannot meet the requirements. Try a different camera.');
+          } else {
+            throw new Error('Could not access camera: ' + (err.message || 'Unknown error'));
+          }
         });
         
         videoStreamRef.current = stream;
+        setPermissionGranted(true);
+        setError('');
         
         if (videoRef.current) {
+          // Set the stream
           videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-          setPermissionGranted(true);
-          setError('');
-          console.log('✅ Camera active');
           
-          // Start interview with welcome message
-          setTimeout(() => {
-            const welcome = "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?";
-            setAiMessage(welcome);
-            setConversation([{ role: 'ai', content: welcome }]);
-            speakText(welcome);
-          }, 1000);
+          // IMPORTANT: Proper play promise handling
+          const playPromise = videoRef.current.play();
+          
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                console.log('✅ Video playing successfully');
+                setVideoPlaying(true);
+                
+                // Start interview after camera is working
+                setTimeout(() => {
+                  const welcome = "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?";
+                  setAiMessage(welcome);
+                  setConversation([{ role: 'ai', content: welcome }]);
+                  speakText(welcome);
+                }, 1000);
+              })
+              .catch(error => {
+                console.log('ℹ️ Autoplay prevented - waiting for user interaction');
+                setVideoPlaying(false);
+                
+                // Add click handler to start video
+                const startVideoOnClick = () => {
+                  if (videoRef.current && !videoPlaying) {
+                    videoRef.current.play()
+                      .then(() => {
+                        console.log('✅ Video started after click');
+                        setVideoPlaying(true);
+                        
+                        // Start interview after camera starts
+                        if (conversation.length === 0) {
+                          const welcome = "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?";
+                          setAiMessage(welcome);
+                          setConversation([{ role: 'ai', content: welcome }]);
+                          speakText(welcome);
+                        }
+                      })
+                      .catch(e => console.log('Still cannot play:', e));
+                  }
+                  document.removeEventListener('click', startVideoOnClick);
+                };
+                
+                document.addEventListener('click', startVideoOnClick);
+              });
+          }
         }
       } catch (err) {
-        console.error('❌ Camera error:', err);
-        setError('Please allow camera and microphone access');
+        console.error('❌ Camera initialization error:', err);
+        setError(err.message || 'Please allow camera and microphone access');
       }
     };
     
@@ -72,7 +135,10 @@ const InterviewMode = () => {
     
     return () => {
       if (videoStreamRef.current) {
-        videoStreamRef.current.getTracks().forEach(track => track.stop());
+        videoStreamRef.current.getTracks().forEach(track => {
+          track.stop();
+          console.log('Stopped track:', track.kind);
+        });
       }
       if (metricsIntervalRef.current) {
         clearInterval(metricsIntervalRef.current);
@@ -94,7 +160,7 @@ const InterviewMode = () => {
         clarity: Math.min(96, Math.max(70, prev.clarity + (Math.random() * 2 - 1))),
         confidence: Math.min(94, Math.max(65, prev.confidence + (Math.random() * 3 - 1.5)))
       }));
-    }, 2000); // Update every 2 seconds instead of every frame
+    }, 2000);
 
     return () => clearInterval(metricsIntervalRef.current);
   }, [permissionGranted]);
@@ -177,7 +243,6 @@ const InterviewMode = () => {
     const fillerWords = ['um', 'uh', 'like', 'actually', 'basically', 'you know'];
     const fillerCount = words.filter(w => fillerWords.includes(w.toLowerCase())).length;
     
-    // Adjust metrics naturally
     setMetrics(prev => ({
       posture: prev.posture + (Math.random() * 2 - 1),
       eyeContact: prev.eyeContact + (fillerCount > 2 ? -2 : 1),
@@ -297,8 +362,28 @@ const InterviewMode = () => {
         justifyContent: 'center',
         padding: '2rem'
       }}>
-        <div style={{ background: 'white', padding: '3rem', borderRadius: '20px', maxWidth: '500px', textAlign: 'center' }}>
-          <h2 style={{ color: '#FF6B6B', marginBottom: '1rem' }}>⚠️ {error}</h2>
+        <div style={{ 
+          background: 'white', 
+          padding: '3rem', 
+          borderRadius: '20px', 
+          maxWidth: '500px', 
+          textAlign: 'center',
+          boxShadow: '0 20px 40px rgba(0,0,0,0.2)'
+        }}>
+          <span style={{ fontSize: '4rem', display: 'block', marginBottom: '1rem' }}>📹</span>
+          <h2 style={{ color: '#FF6B6B', marginBottom: '1rem' }}>Camera Access Required</h2>
+          <p style={{ color: '#666', marginBottom: '2rem', lineHeight: '1.6' }}>
+            {error}
+          </p>
+          <div style={{ background: '#f5f5f5', padding: '1rem', borderRadius: '10px', marginBottom: '2rem', textAlign: 'left' }}>
+            <p style={{ color: '#333', marginBottom: '0.5rem' }}><strong>🔍 Troubleshooting steps:</strong></p>
+            <ul style={{ color: '#666', paddingLeft: '1.5rem' }}>
+              <li>1. Click the camera icon in your browser's address bar</li>
+              <li>2. Select "Allow" for camera and microphone</li>
+              <li>3. Refresh the page</li>
+              <li>4. If using Chrome, try Edge browser</li>
+            </ul>
+          </div>
           <button 
             onClick={() => window.location.reload()}
             style={{
@@ -308,10 +393,14 @@ const InterviewMode = () => {
               border: 'none',
               borderRadius: '30px',
               fontSize: '1rem',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              transition: 'all 0.3s'
             }}
+            onMouseEnter={(e) => e.target.style.transform = 'scale(1.05)'}
+            onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}
           >
-            Try Again
+            🔄 Try Again
           </button>
         </div>
       </div>
@@ -343,7 +432,8 @@ const InterviewMode = () => {
               overflow: 'hidden',
               aspectRatio: '16/9',
               marginBottom: '1.5rem',
-              border: '3px solid rgba(255,255,255,0.2)'
+              border: '3px solid rgba(255,255,255,0.2)',
+              position: 'relative'
             }}>
               <video 
                 ref={videoRef} 
@@ -352,6 +442,42 @@ const InterviewMode = () => {
                 muted
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               />
+              
+              {/* Click to play overlay */}
+              {!videoPlaying && permissionGranted && (
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  background: 'rgba(0,0,0,0.7)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexDirection: 'column',
+                  gap: '1rem',
+                  cursor: 'pointer',
+                  zIndex: 10
+                }} onClick={() => {
+                  if (videoRef.current) {
+                    videoRef.current.play()
+                      .then(() => {
+                        setVideoPlaying(true);
+                        if (conversation.length === 0) {
+                          const welcome = "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?";
+                          setAiMessage(welcome);
+                          setConversation([{ role: 'ai', content: welcome }]);
+                          speakText(welcome);
+                        }
+                      })
+                      .catch(e => console.log('Play error:', e));
+                  }
+                }}>
+                  <span style={{ fontSize: '3rem' }}>🎥</span>
+                  <p style={{ color: 'white', fontSize: '1.2rem' }}>Click to start camera</p>
+                </div>
+              )}
               
               {/* Status Badge */}
               <div style={{
@@ -364,7 +490,8 @@ const InterviewMode = () => {
                 fontSize: '0.9rem',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.5rem'
+                gap: '0.5rem',
+                zIndex: 20
               }}>
                 <span style={{
                   width: '10px',
@@ -501,6 +628,13 @@ const InterviewMode = () => {
             >
               {isListening ? '🔴 Stop Listening' : '🎤 Start Speaking'}
             </button>
+
+            {/* Camera status message */}
+            {permissionGranted && !videoPlaying && (
+              <p style={{ textAlign: 'center', marginTop: '1rem', opacity: 0.8 }}>
+                👆 Click the video to start camera
+              </p>
+            )}
           </div>
         </div>
       </div>
