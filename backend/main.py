@@ -24,7 +24,7 @@ app.add_middleware(
 from agents.live_coach_agent import run_live_coach
 from agents.argument_agent import analyze_argument
 from agents.orchestrator_agent import route_request
-from agents.interview_agent import InterviewAgent  # NEW IMPORT
+from agents.gemini_interviewer import GeminiInterviewer  # Changed from interview_agent
 from session_manager import session_manager
 
 @app.get("/")
@@ -42,7 +42,7 @@ async def health():
 @app.post("/session/create")
 async def create_session(body: dict = {}):
     uid = body.get("uid", "default_user")
-    mode = body.get("mode", "live_coach")  # NEW: support different modes
+    mode = body.get("mode", "live_coach")
     session_id = session_manager.create_session(uid)
     
     # Store mode in session
@@ -73,8 +73,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
     print(f"✅ Client connected: session_id={session_id}")
     
-    # Store interview agent instance if needed
-    interview_agent = None
+    # Store interview agent instance
+    gemini_interviewer = None
     
     try:
         # Load or create session
@@ -83,7 +83,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             session_manager.create_session(session_id=session_id)
             existing = session_manager.get(session_id)
         
-        # Get mode from session (default to live_coach)
+        # Get mode from session
         mode = existing.get("mode", "live_coach")
         print(f"🎯 Mode: {mode}")
         
@@ -94,25 +94,49 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             
             # Route based on message type
             if data['type'] == 'start_interview':
-                # Initialize interview agent
-                interview_agent = InterviewAgent(session_id)
-                response = await interview_agent.start_interview(
-                    data['payload']['company'],
-                    data['payload']['role']
-                )
-                await websocket.send_json(response)
+                # Initialize Gemini interviewer
+                gemini_interviewer = GeminiInterviewer(session_id)
                 
-            elif data['type'] == 'interview_response':
-                if interview_agent:
-                    response = await interview_agent.process_response(
-                        data['payload']['response'],
-                        data['payload']['metrics']
-                    )
-                    await websocket.send_json(response)
+                # Send welcome message
+                welcome = {
+                    "type": "interview_started",
+                    "content": "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?",
+                    "suggestion": "",
+                    "next_topic": "introduction"
+                }
+                await websocket.send_json(welcome)
+                
+            elif data['type'] == 'user_message':
+                if gemini_interviewer:
+                    # Process user message with Gemini
+                    user_text = data.get('text', '')
+                    metrics = data.get('metrics', {})
+                    
+                    print(f"💬 User said: {user_text}")
+                    
+                    # Get AI response from Gemini
+                    response = await gemini_interviewer.process_message(user_text)
+                    
+                    # Send back to frontend
+                    await websocket.send_json({
+                        "type": "ai_response",
+                        "content": response.get("content", ""),
+                        "suggestion": response.get("suggestion", ""),
+                        "response_type": response.get("type", "question")
+                    })
                 else:
                     await websocket.send_json({
                         "type": "error",
                         "message": "Interview not started"
+                    })
+                    
+            elif data['type'] == 'get_help':
+                if gemini_interviewer and data.get('question'):
+                    # Get help on how to answer a question
+                    help_text = gemini_interviewer.get_answer_help(data['question'])
+                    await websocket.send_json({
+                        "type": "help_response",
+                        "content": help_text
                     })
                     
             elif data['type'] == 'live_coach':

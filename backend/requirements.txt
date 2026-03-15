@@ -2,5 +2,6 @@ fastapi
 uvicorn[standard]
 websockets
 google-genai>=0.3.0
+requests
 python-dotenv
 firebase-admin
