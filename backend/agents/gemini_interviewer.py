@@ -3,6 +3,7 @@ import os
 import json
 import google.generativeai as genai
 from typing import List, Dict, Any
+from agents.web_search import SearchAugmentedAI
 
 class GeminiInterviewer:
     def __init__(self, session_id: str):
@@ -18,6 +19,7 @@ class GeminiInterviewer:
             "user_level": "beginner",  # Will be inferred
             "last_question": ""
         }
+        self.search_ai = None  # Will initialize when needed
 
     def build_system_prompt(self) -> str:
         """Create the system prompt for Gemini"""
@@ -136,6 +138,14 @@ YOUR RESPONSE (as JSON):
             "suggestion": "",
             "next_topic": "experience"
         }
+
+async def process_with_search(self, user_message: str) -> Dict[str, Any]:
+    """Process message with web search capability"""
+    if not self.search_ai:
+        from agents.web_search import SearchAugmentedAI
+        self.search_ai = SearchAugmentedAI(self)
+    
+    return await self.search_ai.process_with_search(user_message)    
 
     def get_answer_help(self, question: str) -> str:
         """Provide help on how to answer a specific question"""

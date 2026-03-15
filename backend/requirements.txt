@@ -5,3 +5,4 @@ google-genai>=0.3.0
 requests
 python-dotenv
 firebase-admin
+aiohttp>=3.8.0  # For async HTTP requests

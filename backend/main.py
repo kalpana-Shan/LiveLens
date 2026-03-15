@@ -24,7 +24,7 @@ app.add_middleware(
 from agents.live_coach_agent import run_live_coach
 from agents.argument_agent import analyze_argument
 from agents.orchestrator_agent import route_request
-from agents.gemini_interviewer import GeminiInterviewer  # Changed from interview_agent
+from agents.gemini_interviewer import GeminiInterviewer
 from session_manager import session_manager
 
 @app.get("/")
@@ -108,26 +108,35 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 
             elif data['type'] == 'user_message':
                 if gemini_interviewer:
-                    # Process user message with Gemini
                     user_text = data.get('text', '')
                     metrics = data.get('metrics', {})
                     
                     print(f"💬 User said: {user_text}")
                     
-                    # Get AI response from Gemini
-                    response = await gemini_interviewer.process_message(user_text)
+                    # Check if this needs web search
+                    needs_search = any(word in user_text.lower() for word in 
+                                      ['what is', 'tell me about', 'how to', 'latest', 'news', 
+                                       'salary', 'technology', 'difference', 'compare', 
+                                       'example', 'guide', 'trending'])
                     
-                    # Send back to frontend
+                    if needs_search:
+                        # Use search-augmented processing
+                        response = await gemini_interviewer.process_with_search(user_text)
+                    else:
+                        # Normal processing
+                        response = await gemini_interviewer.process_message(user_text)
+                    
                     await websocket.send_json({
                         "type": "ai_response",
                         "content": response.get("content", ""),
                         "suggestion": response.get("suggestion", ""),
-                        "response_type": response.get("type", "question")
+                        "response_type": response.get("type", "question"),
+                        "search_used": response.get("search_used", False)
                     })
                 else:
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Interview not started"
+                        "message": "Interview not started. Please start interview first."
                     })
                     
             elif data['type'] == 'get_help':
@@ -137,6 +146,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     await websocket.send_json({
                         "type": "help_response",
                         "content": help_text
+                    })
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "No active interview session"
                     })
                     
             elif data['type'] == 'live_coach':
