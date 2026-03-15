@@ -35,7 +35,7 @@ async def root():
 async def health():
     return {
         "status": "healthy",
-        "gemini_key_loaded": bool(os.getenv("GEMINI_API_KEY")),
+        "gemini_key_loaded": bool(os.getenv("GOOGLE_API_KEY")),
         "firebase_project": os.getenv("FIREBASE_PROJECT_ID"),
     }
 
