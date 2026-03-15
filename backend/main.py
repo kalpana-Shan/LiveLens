@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 import uvicorn
 
 load_dotenv()
+# Add this right after load_dotenv() in main.py
+print("🔑 GEMINI_API_KEY loaded:", bool(os.getenv("GOOGLE_API_KEY")))
+print("🔥 FIREBASE_PROJECT_ID:", os.getenv("FIREBASE_PROJECT_ID"))
 
 app = FastAPI(title="LiveLens Backend")
 
