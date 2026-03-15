@@ -316,3 +316,5 @@ export const InterviewMode = ({ sessionId }) => {
     </div>
   );
 };
+
+export default InterviewMode;
