@@ -8,17 +8,23 @@ class SessionManager:
     def __init__(self):
         self.active_sessions: dict = {}
 
-    def create_session(self, uid: str = "default_user") -> str:
-        session_id = str(uuid.uuid4())[:8]
-        self.active_sessions[session_id] = {
-            "uid": uid,
-            "session_id": session_id,
-            "started_at": datetime.utcnow().isoformat(),
-            "status": "active",
-            "snippets": [],
-            "turn_count": 0
-        }
-        print(f"✅ Session created: {session_id} for uid: {uid}")
+    def create_session(self, uid: str = "default_user", session_id: str = None) -> str:
+        if session_id is None:
+            session_id = str(uuid.uuid4())[:8]
+        
+        # Only create if it doesn't exist
+        if session_id not in self.active_sessions:
+            self.active_sessions[session_id] = {
+                "uid": uid,
+                "session_id": session_id,
+                "started_at": datetime.utcnow().isoformat(),
+                "status": "active",
+                "snippets": [],
+                "turn_count": 0
+            }
+            print(f"✅ Session created: {session_id} for uid: {uid}")
+        else:
+            print(f"ℹ️ Session already exists: {session_id}")
         return session_id
 
     def get_session_by_id(self, session_id: str) -> dict:

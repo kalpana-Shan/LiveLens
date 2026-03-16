@@ -69,71 +69,118 @@ async def analyze_turn(session_id: str, body: dict):
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    await websocket.accept()
-    print(f"✅ Client connected: session_id={session_id}")
-    
-    # Store interview agent instance
-    gemini_interviewer = GeminiInterviewer(session_id)
+    import traceback
     
     try:
-        # Create or get session
+        await websocket.accept()
+        print(f"✅ Client connected: session_id={session_id}")
+        
+        # Create or get session with the specific session_id from URL
         existing = session_manager.get(session_id)
         if not existing:
-            # Don't pass session_id parameter
-            session_manager.create_session(uid="default_user")
+            session_manager.create_session(uid="default_user", session_id=session_id)
+            print(f"📝 Created new session: {session_id}")
+        else:
+            print(f"📝 Using existing session: {session_id}")
+        
+        # Initialize GeminiInterviewer inside try block to catch initialization errors
+        try:
+            gemini_interviewer = GeminiInterviewer(session_id)
+            print(f"🤖 GeminiInterviewer initialized for session: {session_id}")
+        except Exception as e:
+            print(f"❌ Failed to initialize GeminiInterviewer: {e}")
+            traceback.print_exc()
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Failed to initialize AI interviewer: {str(e)}"
+            })
+            await websocket.close(code=1011, reason="Initialization failed")
+            return
         
         # Send welcome message immediately
-        welcome = {
-            "type": "ai_response",
-            "content": "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?",
-            "suggestion": "",
-            "response_type": "question",
-            "search_used": False
-        }
-        await websocket.send_json(welcome)
+        try:
+            welcome = {
+                "type": "ai_response",
+                "content": "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?",
+                "suggestion": "",
+                "response_type": "question",
+                "search_used": False
+            }
+            await websocket.send_json(welcome)
+            print(f"📤 Sent welcome message to session: {session_id}")
+        except Exception as e:
+            print(f"❌ Failed to send welcome message: {e}")
+            traceback.print_exc()
         
+        # Main message loop
         while True:
             try:
                 data = await websocket.receive_json()
-                print(f"📩 Received: {data.get('type', 'unknown')}")
+                print(f"📩 Received: {data.get('type', 'unknown')} from session: {session_id}")
                 
-                if data['type'] == 'user_message':
+                if data.get('type') == 'user_message':
                     user_text = data.get('text', '')
+                    if not user_text:
+                        print("⚠️ Empty user message received")
+                        continue
+                    
                     print(f"💬 User said: {user_text}")
                     
                     # Process with Gemini
-                    response = await gemini_interviewer.process_message(user_text)
+                    try:
+                        response = await gemini_interviewer.process_message(user_text)
+                        
+                        # Send response back
+                        await websocket.send_json({
+                            "type": "ai_response",
+                            "content": response.get("content", "Could you tell me more about that?"),
+                            "suggestion": response.get("suggestion", ""),
+                            "response_type": response.get("type", "question"),
+                            "search_used": response.get("search_used", False)
+                        })
+                        print(f"📤 Sent AI response to session: {session_id}")
+                    except Exception as e:
+                        print(f"❌ Error processing message with Gemini: {e}")
+                        traceback.print_exc()
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"Error processing your message: {str(e)}"
+                        })
                     
-                    # Send response back
-                    await websocket.send_json({
-                        "type": "ai_response",
-                        "content": response.get("content", "Could you tell me more about that?"),
-                        "suggestion": response.get("suggestion", ""),
-                        "response_type": response.get("type", "question"),
-                        "search_used": response.get("search_used", False)
-                    })
-                    
-                elif data['type'] == 'ping':
+                elif data.get('type') == 'ping':
                     await websocket.send_json({"type": "pong"})
+                else:
+                    print(f"⚠️ Unknown message type: {data.get('type')}")
                     
             except WebSocketDisconnect:
+                print(f"❌ Client disconnected normally: session_id={session_id}")
                 break
             except Exception as e:
-                print(f"Error processing message: {e}")
+                print(f"❌ Error in message loop: {e}")
+                traceback.print_exc()
                 try:
                     await websocket.send_json({
                         "type": "error",
                         "message": str(e)
                     })
                 except:
+                    # WebSocket might be closed, can't send error
                     pass
+                # Don't break on error, continue listening
                     
     except WebSocketDisconnect:
         print(f"❌ Client disconnected: session_id={session_id}")
-        session_manager.end_session(session_id)
-        await session_manager.save(session_id)
     except Exception as e:
         print(f"❌ WebSocket error: {e}")
+        traceback.print_exc()
+    finally:
+        # Cleanup
+        try:
+            session_manager.end_session(session_id)
+            await session_manager.save(session_id)
+            print(f"🧹 Cleaned up session: {session_id}")
+        except Exception as e:
+            print(f"⚠️ Error during cleanup: {e}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
