@@ -1,3 +1,4 @@
+# backend/main.py
 import os
 import json
 import asyncio
@@ -7,7 +8,6 @@ from dotenv import load_dotenv
 import uvicorn
 
 load_dotenv()
-# Add this right after load_dotenv() in main.py
 print("🔑 GEMINI_API_KEY loaded:", bool(os.getenv("GOOGLE_API_KEY")))
 print("🔥 FIREBASE_PROJECT_ID:", os.getenv("FIREBASE_PROJECT_ID"))
 
@@ -48,8 +48,6 @@ async def create_session(body: dict = {}):
     # Store mode in session
     session = session_manager.get(session_id)
     session["mode"] = mode
-    # Fix: session_manager doesn't have a 'sessions' attribute
-    # session_manager.sessions[session_id] = session  # REMOVE THIS LINE
     
     await session_manager.save(session_id)
     return {"session_id": session_id, "status": "created", "mode": mode}
@@ -75,110 +73,67 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     print(f"✅ Client connected: session_id={session_id}")
     
     # Store interview agent instance
-    gemini_interviewer = None
+    gemini_interviewer = GeminiInterviewer(session_id)
     
     try:
-        # Load or create session - FIXED HERE!
+        # Create or get session
         existing = session_manager.get(session_id)
         if not existing:
-            # FIX: Don't pass session_id parameter
-            new_session_id = session_manager.create_session(uid="default_user")
-            print(f"✅ Created new session: {new_session_id} for WebSocket session: {session_id}")
-            # Store mapping if needed, but for now just use the WebSocket session_id
-            existing = session_manager.get(new_session_id)
+            # Don't pass session_id parameter
+            session_manager.create_session(uid="default_user")
         
-        # Get mode from session (default to interview for now)
-        mode = "interview"
-        print(f"🎯 Mode: {mode}")
+        # Send welcome message immediately
+        welcome = {
+            "type": "ai_response",
+            "content": "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?",
+            "suggestion": "",
+            "response_type": "question",
+            "search_used": False
+        }
+        await websocket.send_json(welcome)
         
-        # Handle different modes
         while True:
-            data = await websocket.receive_json()
-            print(f"📩 Received: {data.get('type', 'unknown')}")
-            
-            # Route based on message type
-            if data['type'] == 'start_interview':
-                # Initialize Gemini interviewer
-                gemini_interviewer = GeminiInterviewer(session_id)
+            try:
+                data = await websocket.receive_json()
+                print(f"📩 Received: {data.get('type', 'unknown')}")
                 
-                # Send welcome message
-                welcome = {
-                    "type": "interview_started",
-                    "content": "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?",
-                    "suggestion": "",
-                    "next_topic": "introduction"
-                }
-                await websocket.send_json(welcome)
-                
-            elif data['type'] == 'user_message':
-                if gemini_interviewer:
+                if data['type'] == 'user_message':
                     user_text = data.get('text', '')
-                    metrics = data.get('metrics', {})
-                    
                     print(f"💬 User said: {user_text}")
                     
-                    # Check if this needs web search
-                    needs_search = any(word in user_text.lower() for word in 
-                                      ['what is', 'tell me about', 'how to', 'latest', 'news', 
-                                       'salary', 'technology', 'difference', 'compare', 
-                                       'example', 'guide', 'trending'])
+                    # Process with Gemini
+                    response = await gemini_interviewer.process_message(user_text)
                     
-                    if needs_search:
-                        # Use search-augmented processing
-                        response = await gemini_interviewer.process_with_search(user_text)
-                    else:
-                        # Normal processing
-                        response = await gemini_interviewer.process_message(user_text)
-                    
+                    # Send response back
                     await websocket.send_json({
                         "type": "ai_response",
-                        "content": response.get("content", ""),
+                        "content": response.get("content", "Could you tell me more about that?"),
                         "suggestion": response.get("suggestion", ""),
                         "response_type": response.get("type", "question"),
                         "search_used": response.get("search_used", False)
                     })
-                else:
+                    
+                elif data['type'] == 'ping':
+                    await websocket.send_json({"type": "pong"})
+                    
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                print(f"Error processing message: {e}")
+                try:
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Interview not started. Please start interview first."
+                        "message": str(e)
                     })
+                except:
+                    pass
                     
-            elif data['type'] == 'get_help':
-                if gemini_interviewer and data.get('question'):
-                    # Get help on how to answer a question
-                    help_text = gemini_interviewer.get_answer_help(data['question'])
-                    await websocket.send_json({
-                        "type": "help_response",
-                        "content": help_text
-                    })
-                else:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "No active interview session"
-                    })
-                    
-            elif data['type'] == 'live_coach':
-                # Original live coach functionality
-                await run_live_coach(websocket, session_id, data)
-                
-            else:
-                # Default to orchestrator for other types
-                response = await route_request(data, session_id)
-                await websocket.send_json(response)
-
     except WebSocketDisconnect:
+        print(f"❌ Client disconnected: session_id={session_id}")
         session_manager.end_session(session_id)
         await session_manager.save(session_id)
-        print(f"❌ Client disconnected: session_id={session_id}")
     except Exception as e:
         print(f"❌ WebSocket error: {e}")
-        try:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": str(e)
-            }))
-        except:
-            pass
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

@@ -1,3 +1,4 @@
+# backend/session_manager.py
 import os
 import uuid
 from datetime import datetime
@@ -19,6 +20,10 @@ class SessionManager:
         }
         print(f"✅ Session created: {session_id} for uid: {uid}")
         return session_id
+
+    def get_session_by_id(self, session_id: str) -> dict:
+        """Get session by ID (for WebSocket connections)"""
+        return self.active_sessions.get(session_id, {})
 
     async def save(self, session_id: str) -> bool:
         session = self.active_sessions.get(session_id)
@@ -56,5 +61,5 @@ class SessionManager:
     def get(self, session_id: str) -> dict:
         return self.active_sessions.get(session_id, {})
 
-# Global instance — shared across all requests
+# Global instance
 session_manager = SessionManager()
