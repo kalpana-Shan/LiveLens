@@ -1,15 +1,17 @@
 # backend/agents/gemini_interviewer.py
 import os
 import json
-import google.generativeai as genai
+# New import
+import google.genai as genai
+from google.genai import types  # Optional, for advanced configs
 from typing import List, Dict, Any
 from agents.web_search import SearchAugmentedAI
 
 class GeminiInterviewer:
     def __init__(self, session_id: str):
         self.session_id = session_id
-        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-        self.model = genai.GenerativeModel('gemini-1.5-pro')
+        self.client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+        self.model = 'gemini-1.5-pro' 
         self.conversation_history = []
         self.interview_context = {
             "role": "Software Engineer",
@@ -92,7 +94,10 @@ YOUR RESPONSE (as JSON):
 """
         
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt
+        )
             result = self.parse_response(response.text)
             
             # Add AI response to history
