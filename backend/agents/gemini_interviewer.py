@@ -14,7 +14,10 @@ class GeminiInterviewer:
         
         # Initialize the new client
         self.client = genai.Client(api_key=api_key)
-        self.model = 'gemini-1.5-pro'  # Model name as string
+        
+        # Try to find a working model
+        self.model = self._find_working_model()
+        print(f"✅ Using Gemini model: {self.model}")
         
         self.conversation_history = []
         self.interview_context = {
@@ -26,6 +29,34 @@ class GeminiInterviewer:
             "last_question": ""
         }
         self.search_ai = None
+
+    def _find_working_model(self) -> str:
+        """Find a working Gemini model"""
+        preferred_models = [
+            'gemini-2.0-flash-exp',
+            'gemini-2.0-pro-exp',
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+            'gemini-pro'
+        ]
+        
+        for model_name in preferred_models:
+            try:
+                # Test the model with a simple prompt
+                response = self.client.models.generate_content(
+                    model=model_name,
+                    contents="test"
+                )
+                if response:
+                    print(f"✅ Found working model: {model_name}")
+                    return model_name
+            except Exception as e:
+                print(f"❌ Model {model_name} failed: {e}")
+                continue
+        
+        # Fallback to default
+        print("⚠️ Using default model: gemini-1.5-pro")
+        return 'gemini-1.5-pro'
 
     async def process_message(self, user_message: str) -> Dict[str, Any]:
         """Process user message and return AI response"""
@@ -40,11 +71,44 @@ class GeminiInterviewer:
         if self.detect_question_mode(user_message):
             return await self.handle_question_mode(user_message)
         
-        # Build prompt
-        prompt = self.build_interview_prompt(user_message)
+        # Normal interview flow - use Gemini dynamically
+        return await self.generate_interview_response(user_message)
+
+    async def generate_interview_response(self, user_message: str) -> Dict[str, Any]:
+        """Generate dynamic interview response based on conversation context"""
+        
+        # Build conversation context (last 10 messages for better context)
+        history_text = "\n".join([
+            f"{'Candidate' if msg['role'] == 'user' else 'Interviewer'}: {msg['content']}"
+            for msg in self.conversation_history[-10:]
+        ])
+        
+        prompt = f"""You are an expert AI interviewer conducting a {self.interview_context['role']} interview at {self.interview_context['company']}.
+
+COMPANY CONTEXT:
+Google values innovation, collaboration, and technical excellence. They look for candidates who can solve complex problems and work well in teams.
+
+CONVERSATION HISTORY:
+{history_text}
+
+The candidate just said: "{user_message}"
+
+IMPORTANT RULES:
+1. DO NOT repeat questions you've already asked
+2. Respond specifically to what the candidate just said
+3. Ask a relevant follow-up question based on THEIR answer
+4. Be natural and conversational, not robotic
+5. Keep your response to 2-3 sentences
+
+Your response should:
+- Acknowledge what they said
+- Ask ONE specific follow-up question
+- Sound like a real interviewer
+
+RESPONSE:"""
         
         try:
-            # Use the async SDK to avoid blocking the event loop
+            # Use the async SDK to avoid blocking
             response = await self.client.aio.models.generate_content(
                 model=self.model,
                 contents=prompt
@@ -52,9 +116,9 @@ class GeminiInterviewer:
             
             result = {
                 "type": "question",
-                "content": response.text if response.text else "Could you tell me more about that?",
+                "content": response.text if response.text else "That's interesting. Can you tell me more?",
                 "suggestion": "",
-                "next_topic": "experience",
+                "next_topic": "follow_up",
                 "search_used": False
             }
             
@@ -66,34 +130,89 @@ class GeminiInterviewer:
             })
             
             self.interview_context['question_count'] += 1
+            self.interview_context['last_question'] = result["content"]
+            
+            # Track topics discussed
+            self._update_topics_discussed(user_message)
             
             return result
             
         except Exception as e:
-            print(f"Gemini error: {e}")
+            print(f"❌ Gemini error in interview response: {e}")
             return {
                 "type": "question",
-                "content": "Could you tell me more about that?",
+                "content": "That's interesting. Could you elaborate on that a bit more?",
                 "suggestion": "",
                 "next_topic": "experience",
                 "search_used": False
             }
 
-    def build_interview_prompt(self, user_message: str) -> str:
-        """Build the interview prompt"""
-        history_text = "\n".join([
-            f"{'Candidate' if msg['role'] == 'user' else 'Interviewer'}: {msg['content']}"
-            for msg in self.conversation_history[-6:]
-        ])
+    def _update_topics_discussed(self, message: str):
+        """Track topics discussed for context"""
+        topics_keywords = {
+            'experience': ['experience', 'worked', 'job', 'role', 'position'],
+            'project': ['project', 'built', 'developed', 'created'],
+            'team': ['team', 'collaborat', 'together', 'group'],
+            'skill': ['skill', 'learn', 'technology', 'language', 'framework'],
+            'challenge': ['challenge', 'difficult', 'problem', 'issue'],
+            'leadership': ['lead', 'manage', 'mentor', 'guide']
+        }
         
-        return f"""You are an expert AI interviewer conducting a {self.interview_context['role']} interview at {self.interview_context['company']}.
+        message_lower = message.lower()
+        for topic, keywords in topics_keywords.items():
+            if any(keyword in message_lower for keyword in keywords):
+                if topic not in self.interview_context['topics_discussed']:
+                    self.interview_context['topics_discussed'].append(topic)
 
-Conversation history:
-{history_text}
+    async def handle_question_mode(self, user_message: str) -> Dict[str, Any]:
+        """Handle when user asks a question - use Gemini dynamically"""
+        
+        prompt = f"""You are an expert AI interview coach helping a candidate prepare for a {self.interview_context['role']} interview at {self.interview_context['company']}.
 
-Candidate just said: "{user_message}"
+The candidate asks: "{user_message}"
 
-Respond naturally as an interviewer. Keep your response concise (2-3 sentences)."""
+Provide a helpful, detailed response that:
+1. Directly answers their specific question
+2. Gives practical examples or frameworks if relevant
+3. Is encouraging and supportive
+4. Is NOT scripted - respond naturally to THIS specific question
+
+Your response should be 3-4 sentences and genuinely helpful."""
+        
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=prompt
+            )
+            
+            result = {
+                "type": "help",
+                "content": response.text if response.text else "I'd be happy to help with that! Could you tell me more specifically what you'd like to know?",
+                "suggestion": "",
+                "search_used": False
+            }
+            
+            # Add to conversation history
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": result["content"],
+                "type": "help"
+            })
+            
+            return result
+            
+        except Exception as e:
+            print(f"❌ Gemini error in question mode: {e}")
+            return {
+                "type": "help",
+                "content": "I'd be happy to help you with that question. Can you tell me a bit more about what specific aspect you're struggling with?",
+                "suggestion": "",
+                "search_used": False
+            }
+
+    def build_interview_prompt(self, user_message: str) -> str:
+        """Build the interview prompt (kept for compatibility)"""
+        return self.generate_interview_response(user_message)
 
     def detect_question_mode(self, message: str) -> bool:
         """Detect if user is asking a question"""
@@ -102,7 +221,8 @@ Respond naturally as an interviewer. Keep your response concise (2-3 sentences).
         question_patterns = [
             "how do i", "how to", "what is", "what are", "can you",
             "could you", "help me", "tell me about", "explain",
-            "why", "when", "where", "example", "sample"
+            "why", "when", "where", "example", "sample", "guide",
+            "advice", "tip", "suggestion", "recommend"
         ]
         
         if message.strip().endswith('?'):
@@ -112,48 +232,21 @@ Respond naturally as an interviewer. Keep your response concise (2-3 sentences).
             if pattern in message_lower:
                 return True
         
+        # Check if it's a help request
+        help_words = ['help', 'confused', 'stuck', 'dont know', "don't know"]
+        if any(word in message_lower for word in help_words):
+            return True
+        
         return False
 
-    async def handle_question_mode(self, user_message: str) -> Dict[str, Any]:
-        """Handle when user asks a question"""
-        
-        # Common question responses
-        if "tell me about yourself" in user_message.lower():
-            return {
-                "type": "help",
-                "content": "For 'Tell me about yourself', use this structure:\n1. Current role and responsibilities\n2. 2-3 key achievements\n3. Why you're interested in this role\n\nExample: 'I'm a software engineer with 5 years of experience at Amazon, where I led the development of a microservices architecture that improved scalability by 40%. I'm excited about Google's focus on innovation and would love to bring my experience in distributed systems to your team.'",
-                "suggestion": "Use the Present-Past-Future framework",
-                "search_used": False
-            }
-        elif "interview questions" in user_message.lower() or "what questions" in user_message.lower():
-            return {
-                "type": "information",
-                "content": "Google Software Engineer interviews typically include:\n1. Coding/Algorithm questions (2 rounds)\n2. System Design (1-2 rounds)\n3. Behavioral questions (1 round)\n4. Googleyness (cultural fit)\n\nFocus on data structures, algorithms, and scalable system design.",
-                "suggestion": "Practice on LeetCode and read System Design Interview books",
-                "search_used": False
-            }
-        elif "google's culture" in user_message.lower() or "about google" in user_message.lower():
-            return {
-                "type": "information",
-                "content": "Google's culture emphasizes:\n- Innovation and moonshot thinking\n- Collaboration and psychological safety\n- Technical excellence\n- Diversity and inclusion\n- 'Googleyness' - being humble, conscientious, and having fun\n\nThey look for candidates who embody these values.",
-                "suggestion": "Research Google's 'Ten things we know to be true'",
-                "search_used": False
-            }
-        else:
-            return {
-                "type": "answer",
-                "content": "That's a great question. For behavioral questions, use the STAR method: Situation, Task, Action, Result. Think of a specific example and walk through each part clearly.",
-                "suggestion": "STAR method",
-                "search_used": False
-            }
-
     async def process_with_search(self, user_message: str) -> Dict[str, Any]:
-        """Placeholder for search functionality"""
+        """Process with search capability"""
+        # For now, just use normal processing
+        # You can integrate web search here later
         return await self.process_message(user_message)
 
     def get_answer_help(self, question: str) -> str:
         """Get help for answering a specific question"""
-        if "tell me about yourself" in question.lower():
-            return "Use the Present-Past-Future framework: Start with your current role, then relevant past experience, then why you're excited about this opportunity."
-        else:
-            return "Use the STAR method: Situation, Task, Action, Result. Be specific about your role and the impact you made."
+        # This is a synchronous method, but we can still use Gemini
+        # For simplicity, return a helpful message
+        return "I'd be happy to help you answer that question. In a real interview, you should use the STAR method: describe the Situation, Task, Action, and Result. Think of a specific example from your experience."
