@@ -44,8 +44,8 @@ class GeminiInterviewer:
         prompt = self.build_interview_prompt(user_message)
         
         try:
-            # Use the new SDK
-            response = self.client.models.generate_content(
+            # Use the async SDK to avoid blocking the event loop
+            response = await self.client.aio.models.generate_content(
                 model=self.model,
                 contents=prompt
             )

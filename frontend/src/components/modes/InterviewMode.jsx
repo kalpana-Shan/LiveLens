@@ -89,9 +89,19 @@ const InterviewMode = () => {
         setConnectionStatus('failed');
       };
       
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
+      ws.onclose = (event) => {
+        console.log('WebSocket disconnected', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean
+        });
         setConnectionStatus('failed');
+        
+        // Don't reconnect if it was a clean close or intentional disconnect
+        if (event.code === 1000 || event.code === 1001) {
+          console.log('Clean close, not reconnecting');
+          return;
+        }
         
         // Attempt to reconnect up to 3 times
         if (reconnectAttempts < maxReconnectAttempts) {
@@ -99,7 +109,7 @@ const InterviewMode = () => {
           console.log(`🔄 Reconnecting in 2 seconds... (attempt ${reconnectAttempts})`);
           reconnectTimeoutRef.current = setTimeout(connectWebSocket, 2000);
         } else {
-          setError('Cannot connect to server. Please check if backend is running.');
+          setError(`Cannot connect to server. ${event.reason || 'Please check if backend is running.'}`);
         }
       };
       

@@ -174,10 +174,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         print(f"❌ WebSocket error: {e}")
         traceback.print_exc()
     finally:
-        # Cleanup
+        # Cleanup - don't block on save, just log errors
         try:
             session_manager.end_session(session_id)
-            await session_manager.save(session_id)
+            # Fire and forget - don't await to avoid blocking
+            asyncio.create_task(session_manager.save(session_id))
             print(f"🧹 Cleaned up session: {session_id}")
         except Exception as e:
             print(f"⚠️ Error during cleanup: {e}")
