@@ -31,32 +31,65 @@ class GeminiInterviewer:
         self.search_ai = None
 
     def _find_working_model(self) -> str:
-        """Find a working Gemini model"""
-        preferred_models = [
-            'gemini-2.0-flash-exp',
-            'gemini-2.0-pro-exp',
-            'gemini-1.5-flash',
-            'gemini-1.5-pro',
-            'gemini-pro'
-        ]
-        
-        for model_name in preferred_models:
-            try:
-                # Test the model with a simple prompt
-                response = self.client.models.generate_content(
-                    model=model_name,
-                    contents="test"
-                )
-                if response:
-                    print(f"✅ Found working model: {model_name}")
-                    return model_name
-            except Exception as e:
-                print(f"❌ Model {model_name} failed: {e}")
-                continue
-        
-        # Fallback to default
-        print("⚠️ Using default model: gemini-1.5-pro")
-        return 'gemini-1.5-pro'
+        """Find a working Gemini model by querying the API"""
+        try:
+            # First, list available models
+            models = self.client.models.list()
+            print("📋 Available models from API:")
+            
+            # Priority order - try these first
+            preferred_models = [
+                'models/gemini-2.5-pro',
+                'models/gemini-2.5-flash',
+                'models/gemini-2.0-flash',
+                'models/gemini-2.0-flash-001',
+                'models/gemini-2.0-flash-lite-001'
+            ]
+            
+            # Store all gemini models for later use
+            gemini_models = []
+            for model in models:
+                model_name = model.name
+                print(f"  - {model_name}")
+                if 'gemini' in model_name.lower():
+                    gemini_models.append(model_name)
+            
+            # Check preferred models first
+            for model_name in preferred_models:
+                try:
+                    print(f"  Testing preferred model: {model_name}")
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents="test"
+                    )
+                    if response and response.text:
+                        print(f"  ✅ Using model: {model_name}")
+                        return model_name
+                except Exception as e:
+                    print(f"  ❌ {model_name} failed: {str(e)[:100]}")
+                    continue
+            
+            # If none of preferred work, try all available gemini models
+            for model_name in gemini_models:
+                try:
+                    print(f"  Testing available model: {model_name}")
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents="test"
+                    )
+                    if response and response.text:
+                        print(f"  ✅ Using model: {model_name}")
+                        return model_name
+                except Exception as e:
+                    continue
+            
+            # Ultimate fallback
+            print("⚠️ Using fallback model: models/gemini-2.0-flash")
+            return 'models/gemini-2.0-flash'
+            
+        except Exception as e:
+            print(f"❌ Error finding model: {e}")
+            return 'models/gemini-2.0-flash'
 
     async def process_message(self, user_message: str) -> Dict[str, Any]:
         """Process user message and return AI response"""
