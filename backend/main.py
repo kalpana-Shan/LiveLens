@@ -48,7 +48,8 @@ async def create_session(body: dict = {}):
     # Store mode in session
     session = session_manager.get(session_id)
     session["mode"] = mode
-    session_manager.sessions[session_id] = session
+    # Fix: session_manager doesn't have a 'sessions' attribute
+    # session_manager.sessions[session_id] = session  # REMOVE THIS LINE
     
     await session_manager.save(session_id)
     return {"session_id": session_id, "status": "created", "mode": mode}
@@ -77,14 +78,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     gemini_interviewer = None
     
     try:
-        # Load or create session
+        # Load or create session - FIXED HERE!
         existing = session_manager.get(session_id)
         if not existing:
-            session_manager.create_session(session_id=session_id)
-            existing = session_manager.get(session_id)
+            # FIX: Don't pass session_id parameter
+            new_session_id = session_manager.create_session(uid="default_user")
+            print(f"✅ Created new session: {new_session_id} for WebSocket session: {session_id}")
+            # Store mapping if needed, but for now just use the WebSocket session_id
+            existing = session_manager.get(new_session_id)
         
-        # Get mode from session
-        mode = existing.get("mode", "live_coach")
+        # Get mode from session (default to interview for now)
+        mode = "interview"
         print(f"🎯 Mode: {mode}")
         
         # Handle different modes
