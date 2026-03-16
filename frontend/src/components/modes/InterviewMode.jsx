@@ -18,7 +18,7 @@ const InterviewMode = () => {
   const [videoPlaying, setVideoPlaying] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connecting', 'connected', 'failed'
+  const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [sessionId] = useState(() => {
     const path = window.location.pathname;
     return path.split('/').pop() || 'session_' + Date.now();
@@ -39,108 +39,89 @@ const InterviewMode = () => {
     minSpeechDuration: 500
   });
 
-  // Initialize WebSocket connection with retry logic
+  // ============ CRITICAL FIX: WebSocket connection ============
   useEffect(() => {
-    let reconnectAttempts = 0;
-    const maxReconnectAttempts = 3;
+    console.log('🔌 Starting WebSocket connection...');
     
     const connectWebSocket = () => {
-      console.log(`🔌 Connecting to WebSocket (attempt ${reconnectAttempts + 1})...`);
-      setConnectionStatus('connecting');
-      
       const wsUrl = `ws://localhost:8000/ws/${sessionId}`;
+      console.log('🌐 Connecting to:', wsUrl);
+      
       const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
-        console.log('✅ WebSocket connected');
+        console.log('✅ WebSocket OPENED - Connection successful!');
         setConnectionStatus('connected');
         setError('');
-        reconnectAttempts = 0;
         
-        // Clear any reconnect timeout
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = null;
-        }
-        
-        // Start keepalive ping every 30 seconds
-        const keepaliveInterval = setInterval(() => {
+        // Send a test message immediately
+        setTimeout(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            try {
-              ws.send(JSON.stringify({ type: 'ping' }));
-              console.log('💓 Sent keepalive ping');
-            } catch (e) {
-              console.error('Failed to send ping:', e);
-              clearInterval(keepaliveInterval);
-            }
-          } else {
-            clearInterval(keepaliveInterval);
+            console.log('📤 Sending test ping...');
+            ws.send(JSON.stringify({ type: 'ping' }));
           }
-        }, 30000);
-        
-        // Store interval ID for cleanup
-        ws._keepaliveInterval = keepaliveInterval;
+        }, 1000);
       };
       
+      // ===== CRITICAL FIX: Message handler =====
       ws.onmessage = (event) => {
+        console.log('📩 RAW message received:', event.data);
+        
         try {
           const data = JSON.parse(event.data);
-          console.log('📩 Received:', data);
+          console.log('📦 Parsed message:', data);
           
+          // Handle different message types
           if (data.type === 'ai_response') {
-            setConversation(prev => [...prev, { role: 'ai', content: data.content }]);
+            console.log('🤖 AI Response received:', data.content);
+            
+            // FORCE UI UPDATE - add to conversation
+            const newMessage = { 
+              role: 'ai', 
+              content: data.content || 'No response content'
+            };
+            
+            setConversation(prev => {
+              const updated = [...prev, newMessage];
+              console.log('💬 Updated conversation:', updated);
+              return updated;
+            });
+            
             setAiMessage(data.content);
+            setIsProcessing(false);
+            
+            // Speak the response
             speakText(data.content);
-            setIsProcessing(false);
-          } else if (data.type === 'error') {
-            console.error('Server error:', data.message);
+          }
+          else if (data.type === 'pong') {
+            console.log('🏓 Pong received - connection healthy');
+          }
+          else if (data.type === 'error') {
+            console.error('❌ Server error:', data.message);
             setError(data.message);
-            setIsProcessing(false);
-            // Don't disconnect on error - connection can continue
-          } else if (data.type === 'pong') {
-            // Keepalive response - connection is alive
-            console.log('💓 Keepalive pong received');
-          } else {
+          }
+          else {
             console.log('📨 Unknown message type:', data.type);
           }
         } catch (e) {
-          console.error('Error parsing message:', e, 'Raw data:', event.data);
+          console.error('❌ Failed to parse message:', e);
+          console.log('Raw data:', event.data);
         }
       };
       
       ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        console.error('❌ WebSocket error:', error);
+        console.log('Error details:', JSON.stringify(error));
         setConnectionStatus('failed');
       };
       
       ws.onclose = (event) => {
-        console.log('WebSocket disconnected', {
+        console.log('🔌 WebSocket closed:', {
           code: event.code,
           reason: event.reason,
           wasClean: event.wasClean
         });
-        
-        // Clear keepalive interval
-        if (ws._keepaliveInterval) {
-          clearInterval(ws._keepaliveInterval);
-        }
-        
         setConnectionStatus('failed');
-        
-        // Don't reconnect if it was a clean close or intentional disconnect
-        if (event.code === 1000 || event.code === 1001) {
-          console.log('Clean close, not reconnecting');
-          return;
-        }
-        
-        // Attempt to reconnect up to 3 times
-        if (reconnectAttempts < maxReconnectAttempts) {
-          reconnectAttempts++;
-          console.log(`🔄 Reconnecting in 2 seconds... (attempt ${reconnectAttempts})`);
-          reconnectTimeoutRef.current = setTimeout(connectWebSocket, 2000);
-        } else {
-          setError(`Cannot connect to server. ${event.reason || 'Please check if backend is running.'}`);
-        }
       };
       
       wsRef.current = ws;
@@ -150,84 +131,114 @@ const InterviewMode = () => {
     
     return () => {
       if (wsRef.current) {
+        console.log('🧹 Cleaning up WebSocket');
         wsRef.current.close();
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
       }
     };
   }, [sessionId]);
 
-  // Set up silence detector callbacks
+  // ============ Speech processing ============
   useEffect(() => {
     silenceDetector.onSpeechStart(() => {
-      console.log('🎤 User started speaking');
+      console.log('🎤 Speech started');
       setIsListening(true);
     });
     
     silenceDetector.onSpeechEnd((duration) => {
-      console.log(`✅ User finished speaking after ${duration}ms`);
+      console.log(`⏱️ Speech ended after ${duration}ms`);
       setIsListening(false);
       
-      if (transcript && transcript.trim() && !isProcessing && connectionStatus === 'connected') {
+      if (transcript && transcript.trim()) {
+        console.log('📝 Processing speech:', transcript);
         processUserSpeech(transcript);
-      } else if (connectionStatus !== 'connected') {
-        console.log('⚠️ Not connected to server, cannot process speech');
-        setConversation(prev => [...prev, { 
-          role: 'ai', 
-          content: 'Please wait while I connect to the server...',
-          isError: true 
-        }]);
+      } else {
+        console.log('⚠️ No transcript to process');
       }
     });
-  }, [silenceDetector, transcript, isProcessing, connectionStatus]);
+  }, [silenceDetector, transcript]);
 
-  // Initialize Camera
+  // ============ Process user speech ============
+  const processUserSpeech = async (speechText) => {
+    if (!speechText.trim() || isProcessing) {
+      console.log('⏭️ Skipping processing:', { text: speechText, isProcessing });
+      return;
+    }
+    
+    setIsProcessing(true);
+    console.log('🔄 Processing speech:', speechText);
+    
+    // Add to conversation
+    setConversation(prev => [...prev, { role: 'user', content: speechText }]);
+    setTranscript('');
+    lastUserMessageRef.current = speechText;
+    
+    // Send to backend
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      const message = {
+        type: 'user_message',
+        text: speechText,
+        metrics: {
+          posture: Math.round(metrics.posture || 0),
+          eyeContact: Math.round(metrics.eyeContact || 0),
+          clarity: Math.round(metrics.clarity || 85),
+          confidence: Math.round(metrics.confidence || 75)
+        }
+      };
+      
+      console.log('📤 Sending to backend:', message);
+      wsRef.current.send(JSON.stringify(message));
+    } else {
+      console.error('❌ WebSocket not open, state:', wsRef.current?.readyState);
+      setConversation(prev => [...prev, { 
+        role: 'ai', 
+        content: 'Connection lost. Please refresh the page.',
+        isError: true 
+      }]);
+      setIsProcessing(false);
+    }
+  };
+
+  // ============ Text to speech ============
+  const speakText = (text) => {
+    if (!synthRef.current || !text) return;
+    
+    console.log('🔊 Speaking:', text);
+    synthRef.current.cancel();
+    
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.9;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+    utterance.lang = 'en-US';
+    
+    utterance.onstart = () => console.log('🔊 Speech started');
+    utterance.onend = () => console.log('🔊 Speech ended');
+    utterance.onerror = (e) => console.log('🔊 Speech error:', e.error);
+    
+    synthRef.current.speak(utterance);
+  };
+
+  // ============ Camera initialization ============
   useEffect(() => {
     const initCamera = async () => {
       try {
-        console.log('📷 Requesting camera access...');
-        
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error('Your browser does not support camera access. Please use Chrome or Edge.');
-        }
-
+        console.log('📷 Requesting camera...');
         const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: "user"
-          }, 
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
+          video: true, 
+          audio: true 
         });
         
         videoStreamRef.current = stream;
         setPermissionGranted(true);
-        setError('');
         
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          
-          const playPromise = videoRef.current.play();
-          
-          if (playPromise !== undefined) {
-            playPromise
-              .then(() => {
-                console.log('✅ Video playing successfully');
-                setVideoPlaying(true);
-              })
-              .catch(error => {
-                console.log('ℹ️ Autoplay prevented - waiting for user interaction');
-                setVideoPlaying(false);
-              });
-          }
+          await videoRef.current.play();
+          setVideoPlaying(true);
+          console.log('✅ Camera active');
         }
       } catch (err) {
-        console.error('❌ Camera initialization error:', err);
+        console.error('❌ Camera error:', err);
         setError('Please allow camera and microphone access');
       }
     };
@@ -238,148 +249,64 @@ const InterviewMode = () => {
       if (videoStreamRef.current) {
         videoStreamRef.current.getTracks().forEach(track => track.stop());
       }
-      if (metricsIntervalRef.current) {
-        clearInterval(metricsIntervalRef.current);
-      }
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
     };
   }, []);
 
-  // Speech Recognition
+  // ============ Speech recognition ============
   useEffect(() => {
     if (!permissionGranted) return;
 
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      setConversation(prev => [...prev, { 
-        role: 'ai', 
-        content: 'Please use Chrome for the best experience with voice features.',
-        isError: true 
-      }]);
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError('Speech recognition not supported');
       return;
     }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognitionRef.current = new SpeechRecognition();
-    
-    recognitionRef.current.continuous = true;
-    recognitionRef.current.interimResults = true;
-    recognitionRef.current.lang = 'en-US';
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
 
-    recognitionRef.current.onresult = (event) => {
+    recognition.onresult = (event) => {
       let finalTranscript = '';
-      
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
           finalTranscript += event.results[i][0].transcript;
         }
       }
-
+      
       if (finalTranscript) {
-        console.log('📝 You said:', finalTranscript);
+        console.log('📝 Recognized:', finalTranscript);
         setTranscript(finalTranscript);
       }
     };
 
-    recognitionRef.current.onerror = (event) => {
-      console.log('Recognition error:', event.error);
-      // Don't show error for no-speech, it's normal
-      if (event.error !== 'no-speech') {
-        setConversation(prev => [...prev, { 
-          role: 'ai', 
-          content: 'Microphone error. Please check your microphone settings.',
-          isError: true 
-        }]);
-      }
+    recognition.onerror = (event) => {
+      console.log('🎤 Recognition error:', event.error);
     };
 
-    try {
-      recognitionRef.current.start();
-    } catch (e) {
-      console.log('Recognition start error:', e);
-    }
+    recognition.start();
+    recognitionRef.current = recognition;
 
-    return () => {
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {}
-      }
-    };
+    return () => recognition.stop();
   }, [permissionGranted]);
 
-  // Process user speech
-  const processUserSpeech = async (speechText) => {
-    if (!speechText.trim() || isProcessing || connectionStatus !== 'connected') return;
-    
-    setIsProcessing(true);
-    
-    // Add to conversation
-    setConversation(prev => [...prev, { role: 'user', content: speechText }]);
-    
-    // Clear transcript
-    setTranscript('');
-    lastUserMessageRef.current = speechText;
-    
-    // Send to backend
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'user_message',
-        text: speechText,
-        metrics: {
-          posture: Math.round(metrics.posture || 0),
-          eyeContact: Math.round(metrics.eyeContact || 0),
-          clarity: Math.round(metrics.clarity || 85),
-          confidence: Math.round(metrics.confidence || 75)
-        }
+  // ============ Metrics simulation ============
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setMetrics(prev => ({
+        posture: Math.min(98, Math.max(65, prev.posture + (Math.random() * 4 - 2))),
+        eyeContact: Math.min(95, Math.max(60, prev.eyeContact + (Math.random() * 4 - 2))),
+        clarity: Math.min(96, Math.max(70, prev.clarity + (Math.random() * 3 - 1.5))),
+        confidence: Math.min(94, Math.max(65, prev.confidence + (Math.random() * 4 - 2)))
       }));
-      console.log('📤 Sent message to server');
-    } else {
-      console.log('⚠️ WebSocket not open, cannot send message');
-      setConversation(prev => [...prev, { 
-        role: 'ai', 
-        content: 'Connection lost. Please wait while I reconnect...',
-        isError: true 
-      }]);
-      setIsProcessing(false);
-    }
-  };
-
-  // Text-to-speech
-  const speakText = (text) => {
-    if (!synthRef.current) return;
-
-    // Cancel any ongoing speech
-    synthRef.current.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9;
-    utterance.pitch = 1;
-    utterance.volume = 1;
+    }, 2000);
     
-    utterance.onerror = (e) => {
-      console.log('Speech error (safe to ignore):', e.error);
-    };
-    
-    synthRef.current.speak(utterance);
-  };
+    return () => clearInterval(interval);
+  }, []);
 
-  // Handle click on video
-  const handleVideoClick = () => {
-    if (videoRef.current && !videoPlaying) {
-      videoRef.current.play()
-        .then(() => setVideoPlaying(true))
-        .catch(e => console.log('Play error:', e));
-    }
-  };
-
-  // Manual retry connection
-  const handleRetryConnection = () => {
-    window.location.reload();
-  };
-
-  if (error && connectionStatus === 'failed') {
+  // ============ UI ============
+  if (error) {
     return (
       <div style={{ 
         minHeight: '100vh',
@@ -389,18 +316,10 @@ const InterviewMode = () => {
         justifyContent: 'center',
         padding: '2rem'
       }}>
-        <div style={{ 
-          background: 'white', 
-          padding: '3rem', 
-          borderRadius: '20px', 
-          maxWidth: '500px', 
-          textAlign: 'center'
-        }}>
-          <span style={{ fontSize: '4rem', marginBottom: '1rem' }}>🔌</span>
-          <h2 style={{ color: '#FF6B6B', marginBottom: '1rem' }}>Connection Error</h2>
-          <p style={{ color: '#666', marginBottom: '2rem' }}>{error}</p>
+        <div style={{ background: 'white', padding: '3rem', borderRadius: '20px', maxWidth: '500px', textAlign: 'center' }}>
+          <h2 style={{ color: '#FF6B6B' }}>{error}</h2>
           <button 
-            onClick={handleRetryConnection}
+            onClick={() => window.location.reload()}
             style={{
               padding: '1rem 2rem',
               background: '#667eea',
@@ -408,10 +327,11 @@ const InterviewMode = () => {
               border: 'none',
               borderRadius: '30px',
               fontSize: '1rem',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              marginTop: '1rem'
             }}
           >
-            🔄 Retry Connection
+            🔄 Refresh
           </button>
         </div>
       </div>
@@ -427,36 +347,33 @@ const InterviewMode = () => {
     }}>
       <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
         <h1 style={{ fontSize: '2.5rem', marginBottom: '2rem', textAlign: 'center' }}>
-          🎯 Software Engineer Interview • Google
+          🎯 AI Interview Practice
         </h1>
 
-        {/* Connection Status Banner */}
-        {connectionStatus !== 'connected' && (
-          <div style={{
-            background: connectionStatus === 'connecting' ? '#FFA500' : '#FF6B6B',
-            padding: '0.5rem',
-            textAlign: 'center',
-            borderRadius: '10px',
-            marginBottom: '1rem'
-          }}>
-            {connectionStatus === 'connecting' ? '🔄 Connecting to server...' : '❌ Connection failed. Please check if backend is running.'}
-          </div>
-        )}
-
-        <div style={{ 
-          display: 'grid', 
-          gridTemplateColumns: '1fr 1fr',
-          gap: '2rem'
+        {/* Debug Info - REMOVE AFTER FIXING */}
+        <div style={{
+          background: 'rgba(0,0,0,0.5)',
+          padding: '0.5rem',
+          borderRadius: '5px',
+          marginBottom: '1rem',
+          fontSize: '0.8rem',
+          fontFamily: 'monospace'
         }}>
+          <div>🔌 WebSocket: {connectionStatus}</div>
+          <div>💬 Conversation: {conversation.length} messages</div>
+          <div>🎤 Listening: {isListening ? 'Yes' : 'No'}</div>
+          <div>🤖 Processing: {isProcessing ? 'Yes' : 'No'}</div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
           {/* Left Column - Video */}
           <div>
             <div style={{ 
-              background: '#1a1a1a', 
+              background: '#000', 
               borderRadius: '20px',
               overflow: 'hidden',
               aspectRatio: '16/9',
-              marginBottom: '1.5rem',
-              border: '3px solid rgba(255,255,255,0.2)',
+              marginBottom: '1rem',
               position: 'relative'
             }}>
               <video 
@@ -466,107 +383,43 @@ const InterviewMode = () => {
                 muted
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               />
-              
-              {!videoPlaying && permissionGranted && (
-                <div 
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    background: 'rgba(0,0,0,0.7)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexDirection: 'column',
-                    gap: '1rem',
-                    cursor: 'pointer',
-                    zIndex: 10
-                  }}
-                  onClick={handleVideoClick}
-                >
-                  <span style={{ fontSize: '3rem' }}>🎥</span>
-                  <p style={{ color: 'white', fontSize: '1.2rem' }}>Click to start camera</p>
-                </div>
-              )}
-              
               <div style={{
                 position: 'absolute',
-                top: '20px',
-                left: '20px',
-                background: connectionStatus === 'connected' 
-                  ? (isListening ? '#4CAF50' : '#4ECDC4')
-                  : '#FFA500',
-                padding: '0.5rem 1rem',
-                borderRadius: '20px',
-                fontSize: '0.9rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                zIndex: 20
+                top: '10px',
+                left: '10px',
+                background: isListening ? '#4CAF50' : '#666',
+                padding: '0.3rem 0.8rem',
+                borderRadius: '15px',
+                fontSize: '0.8rem'
               }}>
-                <span style={{
-                  width: '10px',
-                  height: '10px',
-                  borderRadius: '50%',
-                  background: 'white',
-                  animation: isListening ? 'pulse 1s infinite' : 'none'
-                }}></span>
-                {connectionStatus !== 'connected' ? '🔌 Connecting' : (isListening ? '🎤 Listening' : '⚪ Ready')}
+                {isListening ? '🎤 Listening' : '⚪ Ready'}
               </div>
             </div>
 
             {/* Metrics */}
             <div style={{
               background: 'rgba(255,255,255,0.1)',
-              backdropFilter: 'blur(10px)',
               borderRadius: '20px',
               padding: '1.5rem'
             }}>
-              <h3 style={{ marginBottom: '1.5rem' }}>📊 Live Metrics</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                {Object.entries(metrics).map(([key, value]) => (
-                  <div key={key}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                      <span style={{ textTransform: 'capitalize' }}>{key}</span>
-                      <span style={{ 
-                        color: value > 80 ? '#4ECDC4' : value > 60 ? '#FFD93D' : '#FF6B6B',
-                        fontWeight: 'bold'
-                      }}>
-                        {Math.round(value)}%
-                      </span>
-                    </div>
-                    <div style={{ height: '6px', background: 'rgba(255,255,255,0.2)', borderRadius: '3px' }}>
-                      <div style={{ 
-                        width: `${value}%`, 
-                        height: '100%', 
-                        background: value > 80 ? '#4ECDC4' : value > 60 ? '#FFD93D' : '#FF6B6B',
-                        borderRadius: '3px',
-                        transition: 'width 0.5s ease'
-                      }} />
-                    </div>
+              <h3 style={{ marginBottom: '1rem' }}>📊 Live Metrics</h3>
+              {Object.entries(metrics).map(([key, value]) => (
+                <div key={key} style={{ marginBottom: '0.5rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>{key}</span>
+                    <span>{Math.round(value)}%</span>
                   </div>
-                ))}
-              </div>
-              {transcript && (
-                <div style={{ 
-                  marginTop: '1rem', 
-                  padding: '0.5rem', 
-                  background: 'rgba(255,255,255,0.05)', 
-                  borderRadius: '10px',
-                  fontSize: '0.9rem'
-                }}>
-                  <strong>You're saying:</strong> {transcript}
+                  <div style={{ height: '6px', background: 'rgba(255,255,255,0.2)', borderRadius: '3px' }}>
+                    <div style={{ width: `${value}%`, height: '100%', background: '#4ECDC4', borderRadius: '3px' }} />
+                  </div>
                 </div>
-              )}
+              ))}
             </div>
           </div>
 
-          {/* Right Column - AI Interviewer */}
+          {/* Right Column - Chat */}
           <div style={{
             background: 'rgba(255,255,255,0.1)',
-            backdropFilter: 'blur(10px)',
             borderRadius: '20px',
             padding: '2rem',
             display: 'flex',
@@ -574,113 +427,43 @@ const InterviewMode = () => {
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem' }}>
               <div style={{
-                width: '60px',
-                height: '60px',
-                background: 'linear-gradient(135deg, #FF6B6B, #4ECDC4)',
+                width: '50px',
+                height: '50px',
+                background: '#4ECDC4',
                 borderRadius: '50%',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: '2rem'
+                fontSize: '1.5rem'
               }}>
                 🤖
               </div>
               <div>
                 <h3>AI Interviewer</h3>
-                <p style={{ opacity: 0.8, fontSize: '0.9rem' }}>
-                  {connectionStatus === 'connected' ? '🟢 Online' : '🔴 Connecting...'}
+                <p style={{ fontSize: '0.9rem', opacity: 0.8 }}>
+                  {connectionStatus === 'connected' ? '🟢 Online' : '🔴 Connecting'}
                 </p>
               </div>
             </div>
 
-            {/* Quick Help Buttons - Only show when connected */}
-            {connectionStatus === 'connected' && (
-              <div style={{
-                display: 'flex',
-                gap: '0.5rem',
-                marginBottom: '1rem',
-                flexWrap: 'wrap'
-              }}>
-                <button
-                  onClick={() => {
-                    const helpQuestion = "How do I answer 'Tell me about yourself'?";
-                    setTranscript(helpQuestion);
-                    processUserSpeech(helpQuestion);
-                  }}
-                  style={{
-                    padding: '0.5rem 1rem',
-                    background: 'rgba(255,255,255,0.1)',
-                    border: '1px solid rgba(255,255,255,0.3)',
-                    borderRadius: '20px',
-                    color: 'white',
-                    fontSize: '0.9rem',
-                    cursor: 'pointer'
-                  }}
-                >
-                  🆘 "Tell me about yourself"
-                </button>
-                <button
-                  onClick={() => {
-                    const helpQuestion = "What questions will be asked?";
-                    setTranscript(helpQuestion);
-                    processUserSpeech(helpQuestion);
-                  }}
-                  style={{
-                    padding: '0.5rem 1rem',
-                    background: 'rgba(255,255,255,0.1)',
-                    border: '1px solid rgba(255,255,255,0.3)',
-                    borderRadius: '20px',
-                    color: 'white',
-                    fontSize: '0.9rem',
-                    cursor: 'pointer'
-                  }}
-                >
-                  ❓ Interview questions
-                </button>
-                <button
-                  onClick={() => {
-                    const helpQuestion = "Tell me about Google's culture";
-                    setTranscript(helpQuestion);
-                    processUserSpeech(helpQuestion);
-                  }}
-                  style={{
-                    padding: '0.5rem 1rem',
-                    background: 'rgba(255,255,255,0.1)',
-                    border: '1px solid rgba(255,255,255,0.3)',
-                    borderRadius: '20px',
-                    color: 'white',
-                    fontSize: '0.9rem',
-                    cursor: 'pointer'
-                  }}
-                >
-                  🏢 About Google
-                </button>
-              </div>
-            )}
-
-            {/* Conversation */}
+            {/* Messages */}
             <div style={{ 
               flex: 1,
               maxHeight: '400px',
               overflowY: 'auto',
-              marginBottom: '1.5rem',
+              marginBottom: '1rem',
               padding: '0.5rem'
             }}>
               {conversation.map((msg, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    marginBottom: '1rem',
-                    textAlign: msg.role === 'ai' ? 'left' : 'right'
-                  }}
-                >
+                <div key={idx} style={{
+                  marginBottom: '1rem',
+                  textAlign: msg.role === 'ai' ? 'left' : 'right'
+                }}>
                   <div style={{
                     display: 'inline-block',
                     maxWidth: '80%',
-                    padding: '1rem',
-                    background: msg.role === 'ai' 
-                      ? msg.isError ? 'rgba(255, 107, 107, 0.3)' : 'rgba(255,255,255,0.15)'
-                      : 'rgba(78, 205, 196, 0.3)',
+                    padding: '0.8rem 1rem',
+                    background: msg.role === 'ai' ? 'rgba(255,255,255,0.2)' : '#4ECDC4',
                     borderRadius: msg.role === 'ai' ? '20px 20px 20px 5px' : '20px 20px 5px 20px'
                   }}>
                     {msg.content}
@@ -688,33 +471,25 @@ const InterviewMode = () => {
                 </div>
               ))}
               {isProcessing && (
-                <div style={{ textAlign: 'left', opacity: 0.7 }}>
-                  <i>AI is thinking...</i>
-                </div>
+                <div style={{ opacity: 0.7 }}>🤔 Thinking...</div>
               )}
             </div>
 
-            {aiMessage && conversation.length > 0 && conversation[conversation.length - 1].role === 'ai' && (
+            {/* Current transcript */}
+            {transcript && (
               <div style={{
-                background: 'rgba(255,255,255,0.15)',
-                borderRadius: '20px',
-                padding: '1rem',
+                background: 'rgba(255,255,255,0.05)',
+                padding: '0.5rem',
+                borderRadius: '5px',
                 marginBottom: '1rem',
-                borderLeft: '4px solid #4ECDC4'
+                fontSize: '0.9rem'
               }}>
-                <strong>Now asking:</strong> {aiMessage}
+                🎤 {transcript}
               </div>
             )}
           </div>
         </div>
       </div>
-
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
-      `}</style>
     </div>
   );
 };
