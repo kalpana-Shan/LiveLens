@@ -18,12 +18,10 @@ const InterviewMode = () => {
   const [videoPlaying, setVideoPlaying] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connecting', 'connected', 'failed'
   const [sessionId] = useState(() => {
-    // Get sessionId from URL or create new one
     const path = window.location.pathname;
-    const id = path.split('/').pop();
-    return id || 'session_' + Date.now();
+    return path.split('/').pop() || 'session_' + Date.now();
   });
 
   const videoStreamRef = useRef(null);
@@ -32,7 +30,7 @@ const InterviewMode = () => {
   const metricsIntervalRef = useRef(null);
   const lastUserMessageRef = useRef('');
   const wsRef = useRef(null);
-  const messageQueueRef = useRef([]);
+  const reconnectTimeoutRef = useRef(null);
 
   // Initialize silence detector
   const silenceDetector = useSilenceDetector({
@@ -41,102 +39,82 @@ const InterviewMode = () => {
     minSpeechDuration: 500
   });
 
-  // Interview context
-  const interviewContext = useRef({
-    role: 'Software Engineer',
-    company: 'Google',
-    questionCount: 0,
-    topics: [],
-    lastQuestion: '',
-    personality: 'professional',
-    interviewStarted: false
-  });
-
-  // Initialize WebSocket connection
+  // Initialize WebSocket connection with retry logic
   useEffect(() => {
-    console.log('🔌 Connecting to WebSocket...');
-    const wsUrl = `ws://localhost:8000/ws/${sessionId}`;
-    const ws = new WebSocket(wsUrl);
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 3;
     
-    ws.onopen = () => {
-      console.log('✅ WebSocket connected');
-      setIsConnected(true);
+    const connectWebSocket = () => {
+      console.log(`🔌 Connecting to WebSocket (attempt ${reconnectAttempts + 1})...`);
+      setConnectionStatus('connecting');
       
-      // Send any queued messages
-      while (messageQueueRef.current.length > 0) {
-        const msg = messageQueueRef.current.shift();
-        ws.send(JSON.stringify(msg));
-      }
+      const wsUrl = `ws://localhost:8000/ws/${sessionId}`;
+      const ws = new WebSocket(wsUrl);
       
-      // Start interview automatically after connection
-      setTimeout(() => {
-        if (!interviewContext.current.interviewStarted) {
-          ws.send(JSON.stringify({
-            type: 'start_interview'
-          }));
-          interviewContext.current.interviewStarted = true;
+      ws.onopen = () => {
+        console.log('✅ WebSocket connected');
+        setConnectionStatus('connected');
+        setError('');
+        reconnectAttempts = 0;
+        
+        // Clear any reconnect timeout
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
         }
-      }, 500);
-    };
-    
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log('📩 Received:', data);
+      };
       
-      if (data.type === 'interview_started') {
-        // Add welcome message to conversation
-        const welcomeMsg = { role: 'ai', content: data.content };
-        setConversation(prev => [...prev, welcomeMsg]);
-        setAiMessage(data.content);
-        speakText(data.content);
-      }
-      else if (data.type === 'ai_response') {
-        // Add AI response to conversation
-        const aiMsg = { 
-          role: 'ai', 
-          content: data.content,
-          isHelp: data.response_type === 'help',
-          isInfo: data.response_type === 'information'
-        };
-        setConversation(prev => [...prev, aiMsg]);
-        setAiMessage(data.content);
-        speakText(data.content);
-        setIsProcessing(false);
-      }
-      else if (data.type === 'help_response') {
-        const helpMsg = { role: 'ai', content: data.content, isHelp: true };
-        setConversation(prev => [...prev, helpMsg]);
-        speakText(data.content);
-        setIsProcessing(false);
-      }
-      else if (data.type === 'error') {
-        console.error('Server error:', data.message);
-        setError(data.message);
-        setIsProcessing(false);
-      }
-    };
-    
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setError('Connection error. Please refresh.');
-    };
-    
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-      setIsConnected(false);
-      
-      // Try to reconnect after 3 seconds
-      setTimeout(() => {
-        if (wsRef.current?.readyState !== WebSocket.OPEN) {
-          window.location.reload();
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log('📩 Received:', data);
+          
+          if (data.type === 'ai_response') {
+            setConversation(prev => [...prev, { role: 'ai', content: data.content }]);
+            setAiMessage(data.content);
+            speakText(data.content);
+            setIsProcessing(false);
+          } else if (data.type === 'error') {
+            console.error('Server error:', data.message);
+            setError(data.message);
+            setIsProcessing(false);
+          }
+        } catch (e) {
+          console.error('Error parsing message:', e);
         }
-      }, 3000);
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setConnectionStatus('failed');
+      };
+      
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        setConnectionStatus('failed');
+        
+        // Attempt to reconnect up to 3 times
+        if (reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++;
+          console.log(`🔄 Reconnecting in 2 seconds... (attempt ${reconnectAttempts})`);
+          reconnectTimeoutRef.current = setTimeout(connectWebSocket, 2000);
+        } else {
+          setError('Cannot connect to server. Please check if backend is running.');
+        }
+      };
+      
+      wsRef.current = ws;
     };
     
-    wsRef.current = ws;
+    connectWebSocket();
     
     return () => {
-      ws.close();
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
     };
   }, [sessionId]);
 
@@ -151,12 +129,18 @@ const InterviewMode = () => {
       console.log(`✅ User finished speaking after ${duration}ms`);
       setIsListening(false);
       
-      // Only process if we have transcript and not already processing
-      if (transcript && transcript.trim() && !isProcessing) {
+      if (transcript && transcript.trim() && !isProcessing && connectionStatus === 'connected') {
         processUserSpeech(transcript);
+      } else if (connectionStatus !== 'connected') {
+        console.log('⚠️ Not connected to server, cannot process speech');
+        setConversation(prev => [...prev, { 
+          role: 'ai', 
+          content: 'Please wait while I connect to the server...',
+          isError: true 
+        }]);
       }
     });
-  }, [silenceDetector, transcript, isProcessing]);
+  }, [silenceDetector, transcript, isProcessing, connectionStatus]);
 
   // Initialize Camera
   useEffect(() => {
@@ -212,9 +196,7 @@ const InterviewMode = () => {
     
     return () => {
       if (videoStreamRef.current) {
-        videoStreamRef.current.getTracks().forEach(track => {
-          track.stop();
-        });
+        videoStreamRef.current.getTracks().forEach(track => track.stop());
       }
       if (metricsIntervalRef.current) {
         clearInterval(metricsIntervalRef.current);
@@ -225,28 +207,16 @@ const InterviewMode = () => {
     };
   }, []);
 
-  // Smooth metrics update
-  useEffect(() => {
-    if (!permissionGranted) return;
-
-    metricsIntervalRef.current = setInterval(() => {
-      setMetrics(prev => ({
-        posture: Math.min(98, Math.max(65, prev.posture + (Math.random() * 3 - 1.5))),
-        eyeContact: Math.min(95, Math.max(60, prev.eyeContact + (Math.random() * 4 - 2))),
-        clarity: Math.min(96, Math.max(70, prev.clarity + (Math.random() * 2 - 1))),
-        confidence: Math.min(94, Math.max(65, prev.confidence + (Math.random() * 3 - 1.5)))
-      }));
-    }, 2000);
-
-    return () => clearInterval(metricsIntervalRef.current);
-  }, [permissionGranted]);
-
   // Speech Recognition
   useEffect(() => {
     if (!permissionGranted) return;
 
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      setAiMessage("Please use Chrome for the best experience with voice features.");
+      setConversation(prev => [...prev, { 
+        role: 'ai', 
+        content: 'Please use Chrome for the best experience with voice features.',
+        isError: true 
+      }]);
       return;
     }
 
@@ -256,7 +226,6 @@ const InterviewMode = () => {
     recognitionRef.current.continuous = true;
     recognitionRef.current.interimResults = true;
     recognitionRef.current.lang = 'en-US';
-    recognitionRef.current.maxAlternatives = 1;
 
     recognitionRef.current.onresult = (event) => {
       let finalTranscript = '';
@@ -275,7 +244,14 @@ const InterviewMode = () => {
 
     recognitionRef.current.onerror = (event) => {
       console.log('Recognition error:', event.error);
-      // Don't show error to user, just log it
+      // Don't show error for no-speech, it's normal
+      if (event.error !== 'no-speech') {
+        setConversation(prev => [...prev, { 
+          role: 'ai', 
+          content: 'Microphone error. Please check your microphone settings.',
+          isError: true 
+        }]);
+      }
     };
 
     try {
@@ -293,16 +269,16 @@ const InterviewMode = () => {
     };
   }, [permissionGranted]);
 
-  // Process user speech after silence detection
+  // Process user speech
   const processUserSpeech = async (speechText) => {
-    if (!speechText.trim() || isProcessing || !isConnected) return;
+    if (!speechText.trim() || isProcessing || connectionStatus !== 'connected') return;
     
     setIsProcessing(true);
     
     // Add to conversation
     setConversation(prev => [...prev, { role: 'user', content: speechText }]);
     
-    // Clear transcript after processing
+    // Clear transcript
     setTranscript('');
     lastUserMessageRef.current = speechText;
     
@@ -320,18 +296,13 @@ const InterviewMode = () => {
       }));
       console.log('📤 Sent message to server');
     } else {
-      // Queue message if not connected
-      messageQueueRef.current.push({
-        type: 'user_message',
-        text: speechText,
-        metrics: {
-          posture: Math.round(metrics.posture || 0),
-          eyeContact: Math.round(metrics.eyeContact || 0),
-          clarity: Math.round(metrics.clarity || 85),
-          confidence: Math.round(metrics.confidence || 75)
-        }
-      });
-      console.log('📤 Queued message (not connected)');
+      console.log('⚠️ WebSocket not open, cannot send message');
+      setConversation(prev => [...prev, { 
+        role: 'ai', 
+        content: 'Connection lost. Please wait while I reconnect...',
+        isError: true 
+      }]);
+      setIsProcessing(false);
     }
   };
 
@@ -339,6 +310,7 @@ const InterviewMode = () => {
   const speakText = (text) => {
     if (!synthRef.current) return;
 
+    // Cancel any ongoing speech
     synthRef.current.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
@@ -346,31 +318,28 @@ const InterviewMode = () => {
     utterance.pitch = 1;
     utterance.volume = 1;
     
-    const voices = synthRef.current.getVoices();
-    const preferredVoice = voices.find(voice => 
-      voice.name.includes('Google UK') || voice.name.includes('Female')
-    );
-    if (preferredVoice) utterance.voice = preferredVoice;
-
-    utterance.onstart = () => console.log('🔊 AI speaking');
-    utterance.onend = () => console.log('✅ AI finished');
-    utterance.onerror = (e) => console.error('Speech error:', e);
+    utterance.onerror = (e) => {
+      console.log('Speech error (safe to ignore):', e.error);
+    };
     
     synthRef.current.speak(utterance);
   };
 
-  // Handle click on video to start playback
+  // Handle click on video
   const handleVideoClick = () => {
     if (videoRef.current && !videoPlaying) {
       videoRef.current.play()
-        .then(() => {
-          setVideoPlaying(true);
-        })
+        .then(() => setVideoPlaying(true))
         .catch(e => console.log('Play error:', e));
     }
   };
 
-  if (error) {
+  // Manual retry connection
+  const handleRetryConnection = () => {
+    window.location.reload();
+  };
+
+  if (error && connectionStatus === 'failed') {
     return (
       <div style={{ 
         minHeight: '100vh',
@@ -387,11 +356,11 @@ const InterviewMode = () => {
           maxWidth: '500px', 
           textAlign: 'center'
         }}>
-          <span style={{ fontSize: '4rem', marginBottom: '1rem' }}>📹</span>
+          <span style={{ fontSize: '4rem', marginBottom: '1rem' }}>🔌</span>
           <h2 style={{ color: '#FF6B6B', marginBottom: '1rem' }}>Connection Error</h2>
           <p style={{ color: '#666', marginBottom: '2rem' }}>{error}</p>
           <button 
-            onClick={() => window.location.reload()}
+            onClick={handleRetryConnection}
             style={{
               padding: '1rem 2rem',
               background: '#667eea',
@@ -402,7 +371,7 @@ const InterviewMode = () => {
               cursor: 'pointer'
             }}
           >
-            🔄 Try Again
+            🔄 Retry Connection
           </button>
         </div>
       </div>
@@ -420,6 +389,19 @@ const InterviewMode = () => {
         <h1 style={{ fontSize: '2.5rem', marginBottom: '2rem', textAlign: 'center' }}>
           🎯 Software Engineer Interview • Google
         </h1>
+
+        {/* Connection Status Banner */}
+        {connectionStatus !== 'connected' && (
+          <div style={{
+            background: connectionStatus === 'connecting' ? '#FFA500' : '#FF6B6B',
+            padding: '0.5rem',
+            textAlign: 'center',
+            borderRadius: '10px',
+            marginBottom: '1rem'
+          }}>
+            {connectionStatus === 'connecting' ? '🔄 Connecting to server...' : '❌ Connection failed. Please check if backend is running.'}
+          </div>
+        )}
 
         <div style={{ 
           display: 'grid', 
@@ -445,7 +427,6 @@ const InterviewMode = () => {
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               />
               
-              {/* Click to play overlay */}
               {!videoPlaying && permissionGranted && (
                 <div 
                   style={{
@@ -470,12 +451,13 @@ const InterviewMode = () => {
                 </div>
               )}
               
-              {/* Status Badge */}
               <div style={{
                 position: 'absolute',
                 top: '20px',
                 left: '20px',
-                background: isListening ? '#4CAF50' : isProcessing ? '#FFA500' : '#4ECDC4',
+                background: connectionStatus === 'connected' 
+                  ? (isListening ? '#4CAF50' : '#4ECDC4')
+                  : '#FFA500',
                 padding: '0.5rem 1rem',
                 borderRadius: '20px',
                 fontSize: '0.9rem',
@@ -491,7 +473,7 @@ const InterviewMode = () => {
                   background: 'white',
                   animation: isListening ? 'pulse 1s infinite' : 'none'
                 }}></span>
-                {isListening ? '🎤 Listening' : isProcessing ? '⚪ Processing' : isConnected ? '✅ Connected' : '🔌 Connecting'}
+                {connectionStatus !== 'connected' ? '🔌 Connecting' : (isListening ? '🎤 Listening' : '⚪ Ready')}
               </div>
             </div>
 
@@ -550,7 +532,6 @@ const InterviewMode = () => {
             display: 'flex',
             flexDirection: 'column'
           }}>
-            {/* AI Header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem' }}>
               <div style={{
                 width: '60px',
@@ -567,73 +548,75 @@ const InterviewMode = () => {
               <div>
                 <h3>AI Interviewer</h3>
                 <p style={{ opacity: 0.8, fontSize: '0.9rem' }}>
-                  {isConnected ? '🟢 Online' : '🔴 Connecting...'}
+                  {connectionStatus === 'connected' ? '🟢 Online' : '🔴 Connecting...'}
                 </p>
               </div>
             </div>
 
-            {/* Quick Help Buttons */}
-            <div style={{
-              display: 'flex',
-              gap: '0.5rem',
-              marginBottom: '1rem',
-              flexWrap: 'wrap'
-            }}>
-              <button
-                onClick={() => {
-                  const helpQuestion = "How do I answer 'Tell me about yourself'?";
-                  setTranscript(helpQuestion);
-                  processUserSpeech(helpQuestion);
-                }}
-                style={{
-                  padding: '0.5rem 1rem',
-                  background: 'rgba(255,255,255,0.1)',
-                  border: '1px solid rgba(255,255,255,0.3)',
-                  borderRadius: '20px',
-                  color: 'white',
-                  fontSize: '0.9rem',
-                  cursor: 'pointer'
-                }}
-              >
-                🆘 "Tell me about yourself"
-              </button>
-              <button
-                onClick={() => {
-                  const helpQuestion = "What questions will be asked?";
-                  setTranscript(helpQuestion);
-                  processUserSpeech(helpQuestion);
-                }}
-                style={{
-                  padding: '0.5rem 1rem',
-                  background: 'rgba(255,255,255,0.1)',
-                  border: '1px solid rgba(255,255,255,0.3)',
-                  borderRadius: '20px',
-                  color: 'white',
-                  fontSize: '0.9rem',
-                  cursor: 'pointer'
-                }}
-              >
-                ❓ Interview questions
-              </button>
-              <button
-                onClick={() => {
-                  const helpQuestion = "Tell me about Google's culture";
-                  setTranscript(helpQuestion);
-                  processUserSpeech(helpQuestion);
-                }}
-                style={{
-                  padding: '0.5rem 1rem',
-                  background: 'rgba(255,255,255,0.1)',
-                  border: '1px solid rgba(255,255,255,0.3)',
-                  borderRadius: '20px',
-                  color: 'white',
-                  fontSize: '0.9rem',
-                  cursor: 'pointer'
-                }}
-              >
-                🏢 About Google
-              </button>
-            </div>
+            {/* Quick Help Buttons - Only show when connected */}
+            {connectionStatus === 'connected' && (
+              <div style={{
+                display: 'flex',
+                gap: '0.5rem',
+                marginBottom: '1rem',
+                flexWrap: 'wrap'
+              }}>
+                <button
+                  onClick={() => {
+                    const helpQuestion = "How do I answer 'Tell me about yourself'?";
+                    setTranscript(helpQuestion);
+                    processUserSpeech(helpQuestion);
+                  }}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    background: 'rgba(255,255,255,0.1)',
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: '20px',
+                    color: 'white',
+                    fontSize: '0.9rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  🆘 "Tell me about yourself"
+                </button>
+                <button
+                  onClick={() => {
+                    const helpQuestion = "What questions will be asked?";
+                    setTranscript(helpQuestion);
+                    processUserSpeech(helpQuestion);
+                  }}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    background: 'rgba(255,255,255,0.1)',
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: '20px',
+                    color: 'white',
+                    fontSize: '0.9rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ❓ Interview questions
+                </button>
+                <button
+                  onClick={() => {
+                    const helpQuestion = "Tell me about Google's culture";
+                    setTranscript(helpQuestion);
+                    processUserSpeech(helpQuestion);
+                  }}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    background: 'rgba(255,255,255,0.1)',
+                    border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: '20px',
+                    color: 'white',
+                    fontSize: '0.9rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  🏢 About Google
+                </button>
+              </div>
+            )}
 
             {/* Conversation */}
             <div style={{ 
@@ -656,7 +639,7 @@ const InterviewMode = () => {
                     maxWidth: '80%',
                     padding: '1rem',
                     background: msg.role === 'ai' 
-                      ? msg.isHelp ? 'rgba(255, 215, 0, 0.3)' : 'rgba(255,255,255,0.15)'
+                      ? msg.isError ? 'rgba(255, 107, 107, 0.3)' : 'rgba(255,255,255,0.15)'
                       : 'rgba(78, 205, 196, 0.3)',
                     borderRadius: msg.role === 'ai' ? '20px 20px 20px 5px' : '20px 20px 5px 20px'
                   }}>
@@ -671,7 +654,6 @@ const InterviewMode = () => {
               )}
             </div>
 
-            {/* Current AI Message */}
             {aiMessage && conversation.length > 0 && conversation[conversation.length - 1].role === 'ai' && (
               <div style={{
                 background: 'rgba(255,255,255,0.15)',
@@ -682,13 +664,6 @@ const InterviewMode = () => {
               }}>
                 <strong>Now asking:</strong> {aiMessage}
               </div>
-            )}
-
-            {/* Camera status message */}
-            {permissionGranted && !videoPlaying && (
-              <p style={{ textAlign: 'center', marginTop: '1rem', opacity: 0.8 }}>
-                👆 Click the video to start camera
-              </p>
             )}
           </div>
         </div>
