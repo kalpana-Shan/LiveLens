@@ -62,6 +62,24 @@ const InterviewMode = () => {
           clearTimeout(reconnectTimeoutRef.current);
           reconnectTimeoutRef.current = null;
         }
+        
+        // Start keepalive ping every 30 seconds
+        const keepaliveInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ type: 'ping' }));
+              console.log('💓 Sent keepalive ping');
+            } catch (e) {
+              console.error('Failed to send ping:', e);
+              clearInterval(keepaliveInterval);
+            }
+          } else {
+            clearInterval(keepaliveInterval);
+          }
+        }, 30000);
+        
+        // Store interval ID for cleanup
+        ws._keepaliveInterval = keepaliveInterval;
       };
       
       ws.onmessage = (event) => {
@@ -78,9 +96,15 @@ const InterviewMode = () => {
             console.error('Server error:', data.message);
             setError(data.message);
             setIsProcessing(false);
+            // Don't disconnect on error - connection can continue
+          } else if (data.type === 'pong') {
+            // Keepalive response - connection is alive
+            console.log('💓 Keepalive pong received');
+          } else {
+            console.log('📨 Unknown message type:', data.type);
           }
         } catch (e) {
-          console.error('Error parsing message:', e);
+          console.error('Error parsing message:', e, 'Raw data:', event.data);
         }
       };
       
@@ -95,6 +119,12 @@ const InterviewMode = () => {
           reason: event.reason,
           wasClean: event.wasClean
         });
+        
+        // Clear keepalive interval
+        if (ws._keepaliveInterval) {
+          clearInterval(ws._keepaliveInterval);
+        }
+        
         setConnectionStatus('failed');
         
         // Don't reconnect if it was a clean close or intentional disconnect

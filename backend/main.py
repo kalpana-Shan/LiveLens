@@ -71,17 +71,25 @@ async def analyze_turn(session_id: str, body: dict):
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     import traceback
     
+    gemini_interviewer = None
+    
     try:
+        # Accept WebSocket connection first
         await websocket.accept()
-        print(f"✅ Client connected: session_id={session_id}")
+        print(f"✅ WebSocket accepted: session_id={session_id}")
         
         # Create or get session with the specific session_id from URL
-        existing = session_manager.get(session_id)
-        if not existing:
-            session_manager.create_session(uid="default_user", session_id=session_id)
-            print(f"📝 Created new session: {session_id}")
-        else:
-            print(f"📝 Using existing session: {session_id}")
+        try:
+            existing = session_manager.get(session_id)
+            if not existing:
+                session_manager.create_session(uid="default_user", session_id=session_id)
+                print(f"📝 Created new session: {session_id}")
+            else:
+                print(f"📝 Using existing session: {session_id}")
+        except Exception as e:
+            print(f"⚠️ Session creation error (non-fatal): {e}")
+            traceback.print_exc()
+            # Continue even if session creation fails
         
         # Initialize GeminiInterviewer inside try block to catch initialization errors
         try:
@@ -90,12 +98,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         except Exception as e:
             print(f"❌ Failed to initialize GeminiInterviewer: {e}")
             traceback.print_exc()
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Failed to initialize AI interviewer: {str(e)}"
-            })
-            await websocket.close(code=1011, reason="Initialization failed")
-            return
+            # Send error but don't close - allow connection to continue
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Failed to initialize AI interviewer: {str(e)}. Connection will continue but AI features may be limited."
+                })
+            except:
+                pass
+            # Don't return - continue with limited functionality
         
         # Send welcome message immediately
         try:
@@ -111,11 +122,28 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         except Exception as e:
             print(f"❌ Failed to send welcome message: {e}")
             traceback.print_exc()
+            # Don't close connection - continue to message loop
         
         # Main message loop
+        print(f"🔄 Entering message loop for session: {session_id}")
         while True:
             try:
-                data = await websocket.receive_json()
+                # Use receive_text and parse manually for better error handling
+                try:
+                    raw_data = await websocket.receive_text()
+                    data = json.loads(raw_data)
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ Invalid JSON received: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Invalid JSON format"
+                    })
+                    continue
+                except Exception as e:
+                    print(f"⚠️ Error receiving message: {e}")
+                    # If we can't receive, connection is likely closed
+                    break
+                
                 print(f"📩 Received: {data.get('type', 'unknown')} from session: {session_id}")
                 
                 if data.get('type') == 'user_message':
@@ -126,7 +154,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     
                     print(f"💬 User said: {user_text}")
                     
-                    # Process with Gemini
+                    # Process with Gemini only if initialized
+                    if gemini_interviewer is None:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "AI interviewer not initialized. Please refresh the page."
+                        })
+                        continue
+                    
                     try:
                         response = await gemini_interviewer.process_message(user_text)
                         
@@ -142,13 +177,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     except Exception as e:
                         print(f"❌ Error processing message with Gemini: {e}")
                         traceback.print_exc()
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": f"Error processing your message: {str(e)}"
-                        })
+                        try:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": f"Error processing your message: {str(e)}"
+                            })
+                        except:
+                            pass
                     
                 elif data.get('type') == 'ping':
-                    await websocket.send_json({"type": "pong"})
+                    try:
+                        await websocket.send_json({"type": "pong"})
+                    except:
+                        pass
                 else:
                     print(f"⚠️ Unknown message type: {data.get('type')}")
                     
@@ -166,22 +207,46 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 except:
                     # WebSocket might be closed, can't send error
                     pass
-                # Don't break on error, continue listening
+                # Don't break on error, continue listening unless it's a connection error
+                if "connection" in str(e).lower() or "closed" in str(e).lower():
+                    break
                     
     except WebSocketDisconnect:
         print(f"❌ Client disconnected: session_id={session_id}")
     except Exception as e:
         print(f"❌ WebSocket error: {e}")
         traceback.print_exc()
+        # Try to send error message before closing
+        try:
+            # Check if websocket is still connected by trying to send
+            await websocket.send_json({
+                "type": "error",
+                "message": f"WebSocket error: {str(e)}"
+            })
+        except:
+            # WebSocket already closed, can't send
+            pass
     finally:
         # Cleanup - don't block on save, just log errors
         try:
             session_manager.end_session(session_id)
-            # Fire and forget - don't await to avoid blocking
-            asyncio.create_task(session_manager.save(session_id))
+            # Fire and forget - use ensure_future which is safer than create_task
+            # Only create task if event loop is running
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(session_manager.save(session_id))
+                else:
+                    # If loop is not running, just log that we can't save
+                    print(f"⚠️ Event loop not running, skipping session save for {session_id}")
+            except RuntimeError:
+                # No event loop available
+                print(f"⚠️ No event loop available, skipping session save for {session_id}")
             print(f"🧹 Cleaned up session: {session_id}")
         except Exception as e:
             print(f"⚠️ Error during cleanup: {e}")
+            import traceback
+            traceback.print_exc()
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
