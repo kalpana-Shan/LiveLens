@@ -18,7 +18,13 @@ const InterviewMode = () => {
   const [videoPlaying, setVideoPlaying] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [sendMessage, setSendMessage] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [sessionId] = useState(() => {
+    // Get sessionId from URL or create new one
+    const path = window.location.pathname;
+    const id = path.split('/').pop();
+    return id || 'session_' + Date.now();
+  });
 
   const videoStreamRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -26,12 +32,13 @@ const InterviewMode = () => {
   const metricsIntervalRef = useRef(null);
   const lastUserMessageRef = useRef('');
   const wsRef = useRef(null);
+  const messageQueueRef = useRef([]);
 
   // Initialize silence detector
   const silenceDetector = useSilenceDetector({
     silenceThreshold: 0.02,
-    silenceDuration: 1500, // 1.5 seconds of silence = end of speech
-    minSpeechDuration: 500  // Must speak for at least 0.5 seconds
+    silenceDuration: 1500,
+    minSpeechDuration: 500
   });
 
   // Interview context
@@ -41,47 +48,97 @@ const InterviewMode = () => {
     questionCount: 0,
     topics: [],
     lastQuestion: '',
-    personality: 'professional'
+    personality: 'professional',
+    interviewStarted: false
   });
 
   // Initialize WebSocket connection
   useEffect(() => {
-    const sessionId = window.location.pathname.split('/').pop();
-    const ws = new WebSocket(`ws://localhost:8000/ws/${sessionId}`);
+    console.log('🔌 Connecting to WebSocket...');
+    const wsUrl = `ws://localhost:8000/ws/${sessionId}`;
+    const ws = new WebSocket(wsUrl);
     
     ws.onopen = () => {
       console.log('✅ WebSocket connected');
+      setIsConnected(true);
+      
+      // Send any queued messages
+      while (messageQueueRef.current.length > 0) {
+        const msg = messageQueueRef.current.shift();
+        ws.send(JSON.stringify(msg));
+      }
+      
+      // Start interview automatically after connection
+      setTimeout(() => {
+        if (!interviewContext.current.interviewStarted) {
+          ws.send(JSON.stringify({
+            type: 'start_interview'
+          }));
+          interviewContext.current.interviewStarted = true;
+        }
+      }, 500);
     };
     
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       console.log('📩 Received:', data);
       
-      if (data.type === 'ai_response') {
-        // Add AI response to conversation
-        setConversation(prev => [...prev, { role: 'ai', content: data.content }]);
+      if (data.type === 'interview_started') {
+        // Add welcome message to conversation
+        const welcomeMsg = { role: 'ai', content: data.content };
+        setConversation(prev => [...prev, welcomeMsg]);
         setAiMessage(data.content);
         speakText(data.content);
-      } else if (data.type === 'help_response') {
-        // Show help message
-        setConversation(prev => [...prev, { role: 'ai', content: data.content, isHelp: true }]);
+      }
+      else if (data.type === 'ai_response') {
+        // Add AI response to conversation
+        const aiMsg = { 
+          role: 'ai', 
+          content: data.content,
+          isHelp: data.response_type === 'help',
+          isInfo: data.response_type === 'information'
+        };
+        setConversation(prev => [...prev, aiMsg]);
+        setAiMessage(data.content);
         speakText(data.content);
-      } else if (data.type === 'error') {
+        setIsProcessing(false);
+      }
+      else if (data.type === 'help_response') {
+        const helpMsg = { role: 'ai', content: data.content, isHelp: true };
+        setConversation(prev => [...prev, helpMsg]);
+        speakText(data.content);
+        setIsProcessing(false);
+      }
+      else if (data.type === 'error') {
         console.error('Server error:', data.message);
+        setError(data.message);
+        setIsProcessing(false);
       }
     };
     
     ws.onerror = (error) => {
       console.error('WebSocket error:', error);
+      setError('Connection error. Please refresh.');
+    };
+    
+    ws.onclose = () => {
+      console.log('WebSocket disconnected');
+      setIsConnected(false);
+      
+      // Try to reconnect after 3 seconds
+      setTimeout(() => {
+        if (wsRef.current?.readyState !== WebSocket.OPEN) {
+          window.location.reload();
+        }
+      }, 3000);
     };
     
     wsRef.current = ws;
-    setSendMessage(() => (msg) => ws.send(JSON.stringify(msg)));
     
     return () => {
       ws.close();
     };
-  }, []);
+  }, [sessionId]);
 
   // Set up silence detector callbacks
   useEffect(() => {
@@ -95,7 +152,7 @@ const InterviewMode = () => {
       setIsListening(false);
       
       // Only process if we have transcript and not already processing
-      if (transcript && !isProcessing) {
+      if (transcript && transcript.trim() && !isProcessing) {
         processUserSpeech(transcript);
       }
     });
@@ -115,26 +172,12 @@ const InterviewMode = () => {
           video: {
             width: { ideal: 1280 },
             height: { ideal: 720 },
-            facingMode: "user",
-            frameRate: { ideal: 30 }
+            facingMode: "user"
           }, 
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true
-          }
-        }).catch(err => {
-          console.error('Camera error type:', err.name);
-          if (err.name === 'NotAllowedError') {
-            throw new Error('Camera access denied. Please click the camera icon in the address bar and allow access, then refresh.');
-          } else if (err.name === 'NotFoundError') {
-            throw new Error('No camera found on your device.');
-          } else if (err.name === 'NotReadableError') {
-            throw new Error('Camera is already in use by another app. Please close other apps using your camera.');
-          } else if (err.name === 'OverconstrainedError') {
-            throw new Error('Camera cannot meet the requirements. Try a different camera.');
-          } else {
-            throw new Error('Could not access camera: ' + (err.message || 'Unknown error'));
           }
         });
         
@@ -152,14 +195,6 @@ const InterviewMode = () => {
               .then(() => {
                 console.log('✅ Video playing successfully');
                 setVideoPlaying(true);
-                
-                // Start interview after camera is working
-                setTimeout(() => {
-                  const welcome = "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?";
-                  setAiMessage(welcome);
-                  setConversation([{ role: 'ai', content: welcome }]);
-                  speakText(welcome);
-                }, 1000);
               })
               .catch(error => {
                 console.log('ℹ️ Autoplay prevented - waiting for user interaction');
@@ -169,7 +204,7 @@ const InterviewMode = () => {
         }
       } catch (err) {
         console.error('❌ Camera initialization error:', err);
-        setError(err.message || 'Please allow camera and microphone access');
+        setError('Please allow camera and microphone access');
       }
     };
     
@@ -179,7 +214,6 @@ const InterviewMode = () => {
       if (videoStreamRef.current) {
         videoStreamRef.current.getTracks().forEach(track => {
           track.stop();
-          console.log('Stopped track:', track.kind);
         });
       }
       if (metricsIntervalRef.current) {
@@ -222,6 +256,7 @@ const InterviewMode = () => {
     recognitionRef.current.continuous = true;
     recognitionRef.current.interimResults = true;
     recognitionRef.current.lang = 'en-US';
+    recognitionRef.current.maxAlternatives = 1;
 
     recognitionRef.current.onresult = (event) => {
       let finalTranscript = '';
@@ -233,32 +268,34 @@ const InterviewMode = () => {
       }
 
       if (finalTranscript) {
-        console.log('📝 Interim transcript:', finalTranscript);
+        console.log('📝 You said:', finalTranscript);
         setTranscript(finalTranscript);
-        
-        // Update metrics based on speech
-        updateMetricsFromSpeech(finalTranscript);
       }
     };
 
     recognitionRef.current.onerror = (event) => {
       console.log('Recognition error:', event.error);
+      // Don't show error to user, just log it
     };
 
     try {
       recognitionRef.current.start();
-    } catch (e) {}
+    } catch (e) {
+      console.log('Recognition start error:', e);
+    }
 
     return () => {
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {}
       }
     };
   }, [permissionGranted]);
 
   // Process user speech after silence detection
   const processUserSpeech = async (speechText) => {
-    if (!speechText.trim() || isProcessing) return;
+    if (!speechText.trim() || isProcessing || !isConnected) return;
     
     setIsProcessing(true);
     
@@ -270,8 +307,21 @@ const InterviewMode = () => {
     lastUserMessageRef.current = speechText;
     
     // Send to backend
-    if (sendMessage) {
-      sendMessage({
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'user_message',
+        text: speechText,
+        metrics: {
+          posture: Math.round(metrics.posture || 0),
+          eyeContact: Math.round(metrics.eyeContact || 0),
+          clarity: Math.round(metrics.clarity || 85),
+          confidence: Math.round(metrics.confidence || 75)
+        }
+      }));
+      console.log('📤 Sent message to server');
+    } else {
+      // Queue message if not connected
+      messageQueueRef.current.push({
         type: 'user_message',
         text: speechText,
         metrics: {
@@ -281,23 +331,8 @@ const InterviewMode = () => {
           confidence: Math.round(metrics.confidence || 75)
         }
       });
+      console.log('📤 Queued message (not connected)');
     }
-    
-    setIsProcessing(false);
-  };
-
-  // Update metrics based on speech patterns
-  const updateMetricsFromSpeech = (speech) => {
-    const words = speech.split(' ');
-    const fillerWords = ['um', 'uh', 'like', 'actually', 'basically', 'you know'];
-    const fillerCount = words.filter(w => fillerWords.includes(w.toLowerCase())).length;
-    
-    setMetrics(prev => ({
-      posture: prev.posture + (Math.random() * 2 - 1),
-      eyeContact: prev.eyeContact + (fillerCount > 2 ? -2 : 1),
-      clarity: prev.clarity + (words.length > 20 ? 1 : -1),
-      confidence: prev.confidence + (fillerCount === 0 ? 2 : -1)
-    }));
   };
 
   // Text-to-speech
@@ -312,10 +347,15 @@ const InterviewMode = () => {
     utterance.volume = 1;
     
     const voices = synthRef.current.getVoices();
-    const preferredVoice = voices.find(voice => voice.name.includes('Google UK') || voice.name.includes('Female'));
+    const preferredVoice = voices.find(voice => 
+      voice.name.includes('Google UK') || voice.name.includes('Female')
+    );
     if (preferredVoice) utterance.voice = preferredVoice;
 
+    utterance.onstart = () => console.log('🔊 AI speaking');
     utterance.onend = () => console.log('✅ AI finished');
+    utterance.onerror = (e) => console.error('Speech error:', e);
+    
     synthRef.current.speak(utterance);
   };
 
@@ -325,12 +365,6 @@ const InterviewMode = () => {
       videoRef.current.play()
         .then(() => {
           setVideoPlaying(true);
-          if (conversation.length === 0) {
-            const welcome = "Hi there! I'm your AI interviewer for today's Software Engineer position at Google. Why don't you start by telling me a bit about yourself and your experience?";
-            setAiMessage(welcome);
-            setConversation([{ role: 'ai', content: welcome }]);
-            speakText(welcome);
-          }
         })
         .catch(e => console.log('Play error:', e));
     }
@@ -351,23 +385,11 @@ const InterviewMode = () => {
           padding: '3rem', 
           borderRadius: '20px', 
           maxWidth: '500px', 
-          textAlign: 'center',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.2)'
+          textAlign: 'center'
         }}>
-          <span style={{ fontSize: '4rem', display: 'block', marginBottom: '1rem' }}>📹</span>
-          <h2 style={{ color: '#FF6B6B', marginBottom: '1rem' }}>Camera Access Required</h2>
-          <p style={{ color: '#666', marginBottom: '2rem', lineHeight: '1.6' }}>
-            {error}
-          </p>
-          <div style={{ background: '#f5f5f5', padding: '1rem', borderRadius: '10px', marginBottom: '2rem', textAlign: 'left' }}>
-            <p style={{ color: '#333', marginBottom: '0.5rem' }}><strong>🔍 Troubleshooting steps:</strong></p>
-            <ul style={{ color: '#666', paddingLeft: '1.5rem' }}>
-              <li>1. Click the camera icon in your browser's address bar</li>
-              <li>2. Select "Allow" for camera and microphone</li>
-              <li>3. Refresh the page</li>
-              <li>4. If using Chrome, try Edge browser</li>
-            </ul>
-          </div>
+          <span style={{ fontSize: '4rem', marginBottom: '1rem' }}>📹</span>
+          <h2 style={{ color: '#FF6B6B', marginBottom: '1rem' }}>Connection Error</h2>
+          <p style={{ color: '#666', marginBottom: '2rem' }}>{error}</p>
           <button 
             onClick={() => window.location.reload()}
             style={{
@@ -377,12 +399,8 @@ const InterviewMode = () => {
               border: 'none',
               borderRadius: '30px',
               fontSize: '1rem',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              transition: 'all 0.3s'
+              cursor: 'pointer'
             }}
-            onMouseEnter={(e) => e.target.style.transform = 'scale(1.05)'}
-            onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}
           >
             🔄 Try Again
           </button>
@@ -457,7 +475,7 @@ const InterviewMode = () => {
                 position: 'absolute',
                 top: '20px',
                 left: '20px',
-                background: isListening ? '#4CAF50' : '#FFA500',
+                background: isListening ? '#4CAF50' : isProcessing ? '#FFA500' : '#4ECDC4',
                 padding: '0.5rem 1rem',
                 borderRadius: '20px',
                 fontSize: '0.9rem',
@@ -473,7 +491,7 @@ const InterviewMode = () => {
                   background: 'white',
                   animation: isListening ? 'pulse 1s infinite' : 'none'
                 }}></span>
-                {isListening ? '🎤 Listening' : isProcessing ? '⚪ Processing...' : '⚪ Ready'}
+                {isListening ? '🎤 Listening' : isProcessing ? '⚪ Processing' : isConnected ? '✅ Connected' : '🔌 Connecting'}
               </div>
             </div>
 
@@ -510,8 +528,14 @@ const InterviewMode = () => {
                 ))}
               </div>
               {transcript && (
-                <div style={{ marginTop: '1rem', padding: '0.5rem', background: 'rgba(255,255,255,0.05)', borderRadius: '10px' }}>
-                  <small>Speaking: {transcript}</small>
+                <div style={{ 
+                  marginTop: '1rem', 
+                  padding: '0.5rem', 
+                  background: 'rgba(255,255,255,0.05)', 
+                  borderRadius: '10px',
+                  fontSize: '0.9rem'
+                }}>
+                  <strong>You're saying:</strong> {transcript}
                 </div>
               )}
             </div>
@@ -542,8 +566,73 @@ const InterviewMode = () => {
               </div>
               <div>
                 <h3>AI Interviewer</h3>
-                <p style={{ opacity: 0.8, fontSize: '0.9rem' }}>Google • Software Engineer</p>
+                <p style={{ opacity: 0.8, fontSize: '0.9rem' }}>
+                  {isConnected ? '🟢 Online' : '🔴 Connecting...'}
+                </p>
               </div>
+            </div>
+
+            {/* Quick Help Buttons */}
+            <div style={{
+              display: 'flex',
+              gap: '0.5rem',
+              marginBottom: '1rem',
+              flexWrap: 'wrap'
+            }}>
+              <button
+                onClick={() => {
+                  const helpQuestion = "How do I answer 'Tell me about yourself'?";
+                  setTranscript(helpQuestion);
+                  processUserSpeech(helpQuestion);
+                }}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: 'rgba(255,255,255,0.1)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: '20px',
+                  color: 'white',
+                  fontSize: '0.9rem',
+                  cursor: 'pointer'
+                }}
+              >
+                🆘 "Tell me about yourself"
+              </button>
+              <button
+                onClick={() => {
+                  const helpQuestion = "What questions will be asked?";
+                  setTranscript(helpQuestion);
+                  processUserSpeech(helpQuestion);
+                }}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: 'rgba(255,255,255,0.1)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: '20px',
+                  color: 'white',
+                  fontSize: '0.9rem',
+                  cursor: 'pointer'
+                }}
+              >
+                ❓ Interview questions
+              </button>
+              <button
+                onClick={() => {
+                  const helpQuestion = "Tell me about Google's culture";
+                  setTranscript(helpQuestion);
+                  processUserSpeech(helpQuestion);
+                }}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: 'rgba(255,255,255,0.1)',
+                  border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: '20px',
+                  color: 'white',
+                  fontSize: '0.9rem',
+                  cursor: 'pointer'
+                }}
+              >
+                🏢 About Google
+              </button>
             </div>
 
             {/* Conversation */}
